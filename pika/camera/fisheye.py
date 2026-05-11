@@ -50,8 +50,19 @@ class FisheyeCamera:
             bool: 连接是否成功
         """
         try:
-            cv2.setLogLevel(0)
-            self.cap = cv2.VideoCapture(self.device_id)
+            # OpenCV 4.13.0版本没有setLogLevel
+            if hasattr(cv2, 'setLogLevel'):
+                cv2.setLogLevel(0)
+            # 指定V4L2后端，防止FFMPEG自动降级导致设备索引错乱
+            self.cap = cv2.VideoCapture(self.device_id, cv2.CAP_V4L2)
+
+            # 检查
+            backend_name = self.cap.getBackendName()
+            if "v4l2" not in backend_name.lower():
+                logger.error(f"相机后端错误: 期望V4L2，实际为{backend_name}，设备ID: {self.device_id}")
+                self.cap.release()
+                return False
+
             self.fourcc = cv2.VideoWriter_fourcc(*'MJPG')
             self.cap.set(cv2.CAP_PROP_FOURCC, self.fourcc)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)

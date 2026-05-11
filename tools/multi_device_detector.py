@@ -98,11 +98,21 @@ def get_device_info(device_index):
     # 遍历可能的视频设备
     for i in range(60):  # 检查前60个视频设备
         try:
-            cv2.setLogLevel(0)
-            cap = cv2.VideoCapture(i)
+            # OpenCV 4.13.0版本没有setLogLevel，这里做一下兼容性处理
+            if hasattr(cv2, 'setLogLevel'):
+                cv2.setLogLevel(0)
+            # 指定V4L2后端，防止FFMPEG自动降级导致设备索引错乱
+            cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
             if not cap.isOpened():
                 continue
-                
+
+            # 确认是V4L2后端
+            backend_name = cap.getBackendName()
+            if "v4l2" not in backend_name.lower():
+                print(f"跳过非V4L2后端设备 /dev/video{i}: {backend_name}")
+                cap.release()
+                continue
+
             # 设置相机参数
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
             cap.set(cv2.CAP_PROP_FOURCC, fourcc)
