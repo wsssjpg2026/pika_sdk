@@ -213,7 +213,7 @@ sudo sh -c 'echo "" > /etc/udev/rules.d/fisheye.rules'
             continue
             
         video_index = 80 + index  # 从video80开始编号
-        content += f'sudo sh -c \'echo "ACTION==\\"add\\", KERNEL==\\"video[0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60]*\\",' \
+        content += f'sudo sh -c \'echo "ACTION==\\"add\\", KERNEL==\\"video*[02468]\\",' \
                   f' KERNELS==\\"{video_path}\\", SUBSYSTEMS==\\"usb\\", MODE:=\\"0777\\", SYMLINK+=\\"video{video_index}\\"" >> /etc/udev/rules.d/fisheye.rules\'\n'
     
     # 应用规则
