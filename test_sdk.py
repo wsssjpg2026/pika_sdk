@@ -100,6 +100,36 @@ def test_gripper_class():
         print(f"✗ 测试失败: {e}")
         return False
 
+def test_ego_class():
+    """测试 Ego 类"""
+    print("\n测试 Ego 类...")
+    try:
+        from pika import ego
+
+        # 创建 Ego 对象（不实际连接）
+        my_ego = ego('/dev/ttyUSB0')
+        print("✓ 成功创建 Ego 对象")
+
+        # 检查方法是否存在
+        methods = [
+            'connect', 'disconnect',
+            'get_imu_data', 'get_accelerometer', 'get_gyroscope',
+            'get_magnetometer', 'get_quaternion',
+            'get_fisheye_camera', 'get_realsense_camera',
+            'set_camera_param', 'set_fisheye_camera_index', 'set_realsense_serial_number'
+        ]
+        for method in methods:
+            if hasattr(my_ego, method) and callable(getattr(my_ego, method)):
+                print(f"✓ 方法 {method} 存在")
+            else:
+                print(f"✗ 方法 {method} 不存在或不可调用")
+                return False
+
+        return True
+    except Exception as e:
+        print(f"✗ 测试失败: {e}")
+        return False
+
 def test_camera_modules():
     """测试相机模块"""
     print("\n测试相机模块...")
@@ -135,7 +165,10 @@ def main():
     
     # 测试 Gripper 类
     test_gripper_class()
-    
+
+    # 测试 Ego 类
+    test_ego_class()
+
     # 测试相机模块
     test_camera_modules()
     

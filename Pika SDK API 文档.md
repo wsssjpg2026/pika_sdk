@@ -4,13 +4,14 @@
 
 1. [模块概述](#模块概述)
 2. [Sense 类](#sense-类)
-3. [Gripper 类](#gripper-类)
-4. [FisheyeCamera 类](#fisheyecamera-类)
-5. [RealSenseCamera 类](#realsensecamera-类)
-6. [SerialComm 类](#serialcomm-类)
-7. [ViveTracker 类](#vivetracker-类)
-8. [错误处理](#错误处理)
-9. [常见问题解答](#常见问题解答)
+3. [Ego 类](#ego-类)
+4. [Gripper 类](#gripper-类)
+5. [FisheyeCamera 类](#fisheyecamera-类)
+6. [RealSenseCamera 类](#realsensecamera-类)
+7. [SerialComm 类](#serialcomm-类)
+8. [ViveTracker 类](#vivetracker-类)
+9. [错误处理](#错误处理)
+10. [常见问题解答](#常见问题解答)
 
 ## 模块概述
 
@@ -19,6 +20,10 @@ Pika SDK 由以下主要模块组成：
 ### pika.sense
 
 `pika.sense` 模块提供了对 Pika Sense 设备的访问接口，支持编码器数据读取和相机访问。该模块的核心是 `Sense` 类，用于与 Pika Sense 设备进行通信。
+
+### pika.ego
+
+`pika.ego` 模块提供了对 Pika Ego 设备的访问接口，支持IMU数据读取和相机访问。该模块的核心是 `Ego` 类，用于与 Pika Ego 设备进行通信。
 
 ### pika.gripper
 
@@ -410,6 +415,289 @@ my_sense.get_version()
 my_sense.get_version()
 ```
 
+
+## Ego 类
+
+`Ego` 类是 Pika Ego 设备的主要接口，提供对 IMU 传感器和相机的访问。
+
+### 导入方式
+
+```python
+from pika import ego
+```
+
+### 初始化
+
+```python
+my_ego = ego(port='/dev/ttyUSB0')
+```
+
+#### 参数
+
+- `port` (str): 串口设备路径
+
+### 方法
+
+#### connect()
+
+连接 Pika Ego 设备。
+
+```python
+success = my_ego.connect()
+```
+
+**返回值**:
+- `bool`: 连接是否成功
+
+**示例**:
+
+```python
+my_ego = ego('/dev/ttyUSB0')
+if my_ego.connect():
+    print("设备连接成功")
+else:
+    print("设备连接失败")
+```
+
+#### disconnect()
+
+断开 Pika Ego 设备连接，释放资源。
+
+```python
+my_ego.disconnect()
+```
+
+**返回值**:
+- 无
+
+**示例**:
+```python
+my_ego.disconnect()
+print("设备已断开连接")
+```
+
+#### get_imu_data()
+
+获取 IMU 完整原始数据。
+
+```python
+imu_data = my_ego.get_imu_data()
+```
+
+**返回值**:
+- `dict`: 包含以下字段的字典:
+  - `acc` (list): 加速度计数据 [x, y, z]，单位为 m/s^2
+  - `gyr` (list): 陀螺仪数据 [x, y, z]，单位为 rad/s
+  - `mag` (list): 磁力计数据 [x, y, z]，单位为 uT
+  - `quat` (list): 四元数 [w, x, y, z]
+
+**示例**:
+```python
+imu_data = my_ego.get_imu_data()
+print(f"加速度: {imu_data['acc']}")
+print(f"角速度: {imu_data['gyr']}")
+print(f"磁力计: {imu_data['mag']}")
+print(f"四元数: {imu_data['quat']}")
+```
+
+#### get_accelerometer()
+
+获取加速度计数据。
+
+```python
+acc = my_ego.get_accelerometer()
+```
+
+**返回值**:
+- `list`: [x, y, z] 加速度数据，单位为 m/s^2
+
+**示例**:
+```python
+acc = my_ego.get_accelerometer()
+print(f"加速度: x={acc[0]:.3f}, y={acc[1]:.3f}, z={acc[2]:.3f} m/s^2")
+```
+
+#### get_gyroscope()
+
+获取陀螺仪数据。
+
+```python
+gyr = my_ego.get_gyroscope()
+```
+
+**返回值**:
+- `list`: [x, y, z] 角速度数据，单位为 rad/s
+
+**示例**:
+```python
+gyr = my_ego.get_gyroscope()
+print(f"角速度: x={gyr[0]:.3f}, y={gyr[1]:.3f}, z={gyr[2]:.3f} rad/s")
+```
+
+#### get_magnetometer()
+
+获取磁力计数据。
+
+```python
+mag = my_ego.get_magnetometer()
+```
+
+**返回值**:
+- `list`: [x, y, z] 磁力计数据，单位为 uT
+
+**示例**:
+```python
+mag = my_ego.get_magnetometer()
+print(f"磁力计: x={mag[0]:.1f}, y={mag[1]:.1f}, z={mag[2]:.1f} uT")
+```
+
+#### get_quaternion()
+
+获取四元数姿态数据。
+
+```python
+quat = my_ego.get_quaternion()
+```
+
+**返回值**:
+- `list`: [w, x, y, z] 四元数
+
+**示例**:
+```python
+quat = my_ego.get_quaternion()
+w, x, y, z = quat
+print(f"四元数: w={w:.3f}, x={x:.3f}, y={y:.3f}, z={z:.3f}")
+```
+
+#### set_camera_param(camera_width, camera_height, camera_fps, fisheye_thread_fps=100)
+
+设置相机分辨率和帧率。
+
+```python
+my_ego.set_camera_param(camera_width, camera_height, camera_fps, fisheye_thread_fps=100)
+```
+
+**参数**:
+
+- `camera_width` (int): 相机宽度，默认为 1280
+- `camera_height` (int): 相机高度，默认为 720
+- `camera_fps` (int): 相机帧率，默认为 30
+- `fisheye_thread_fps` (int): 鱼眼相机读取线程帧率，默认为 100
+
+**返回值**:
+- 无
+
+**示例**:
+```python
+# 设置相机参数为 1280x720，帧率 30fps，鱼眼线程帧率 100Hz
+my_ego.set_camera_param(1280, 720, 30, 100)
+```
+
+以下是可选的分辨率和帧率：
+
+|  分辨率  |   帧率   |
+| :------: | :------: |
+| 1280x720 |    30    |
+| 640x480  | 30/60/90 |
+
+#### set_fisheye_camera_index(index)
+
+设置鱼眼相机的索引。
+
+```python
+my_ego.set_fisheye_camera_index(index)
+```
+
+**参数**:
+- `index` (int): 鱼眼相机索引
+
+**返回值**:
+- 无
+
+**示例**:
+```python
+# 设置鱼眼相机索引为 81
+my_ego.set_fisheye_camera_index(81)
+```
+
+#### set_realsense_serial_number(serial_number)
+
+设置 RealSense 相机序列号。
+
+```python
+my_ego.set_realsense_serial_number(serial_number)
+```
+
+**参数**:
+- `serial_number` (str): RealSense 相机序列号
+
+**返回值**:
+- 无
+
+**示例**:
+```python
+# 设置 RealSense 相机序列号
+my_ego.set_realsense_serial_number("260422273747")
+```
+
+#### get_fisheye_camera()
+
+获取鱼眼相机对象。
+
+```python
+fisheye_camera = my_ego.get_fisheye_camera()
+```
+
+**返回值**:
+- `FisheyeCamera`: 鱼眼相机对象，如果初始化失败则返回 None
+
+**示例**:
+```python
+fisheye_camera = my_ego.get_fisheye_camera()
+if fisheye_camera:
+    success, frame = fisheye_camera.get_frame()
+    if success:
+        # 处理图像
+        pass
+```
+
+#### get_realsense_camera()
+
+获取 RealSense 相机对象。
+
+```python
+realsense_camera = my_ego.get_realsense_camera()
+```
+
+**返回值**:
+- `RealSenseCamera`: RealSense 相机对象，如果初始化失败则返回 None
+
+**示例**:
+```python
+realsense_camera = my_ego.get_realsense_camera()
+if realsense_camera:
+    success, color_frame = realsense_camera.get_color_frame()
+    if success:
+        # 处理彩色图像
+        pass
+```
+
+#### get_version()
+
+获取 Pika Ego 设备的固件版本。
+
+```python
+my_ego.get_version()
+```
+
+**返回值**:
+- `tuple`: 包含版本信息的元组
+
+**示例**:
+```python
+version_info = my_ego.get_version()
+print(f"设备版本: {version_info}")
+```
 
 ## Gripper 类
 
