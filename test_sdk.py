@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika SDK 测试脚本
-用于测试SDK的安装和基本功能
+Pika SDK test script.
+Used to verify SDK installation and basic functionality.
 """
 
 import os
@@ -11,44 +11,44 @@ import sys
 import time
 
 def test_import():
-    """测试导入模块"""
-    print("测试导入模块...")
+    """Test module imports."""
+    print("Testing module imports...")
     try:
         from pika import sense, gripper
-        print("✓ 成功导入 pika 模块")
+        print("✓ Successfully imported pika module")
         return True
     except ImportError as e:
-        print(f"✗ 导入失败: {e}")
+        print(f"✗ Import failed: {e}")
         return False
 
 def test_serial_comm():
-    """测试串口通信模块"""
-    print("\n测试串口通信模块...")
+    """Test serial communication module."""
+    print("\nTesting serial communication module...")
     try:
         from pika.serial_comm import SerialComm
         
-        # 创建串口通信对象
-        serial_comm = SerialComm(port='/dev/ttyUSB0')  # 请根据实际情况修改串口路径
-        print("✓ 成功创建 SerialComm 对象")
+        # Create SerialComm object
+        serial_comm = SerialComm(port='/dev/ttyUSB0')  # Update serial port path as needed
+        print("✓ Successfully created SerialComm object")
         
-        # 测试连接方法（不实际连接）
-        print("✓ SerialComm 类方法检查通过")
+        # Check connect method (no actual connection)
+        print("✓ SerialComm class method checks passed")
         return True
     except Exception as e:
-        print(f"✗ 测试失败: {e}")
+        print(f"✗ Test failed: {e}")
         return False
 
 def test_sense_class():
-    """测试 Sense 类"""
-    print("\n测试 Sense 类...")
+    """Test Sense class."""
+    print("\nTesting Sense class...")
     try:
         from pika import sense
         
-        # 创建 Sense 对象（不实际连接）
-        my_sense = sense('/dev/ttyUSB0')  # 请根据实际情况修改串口路径
-        print("✓ 成功创建 Sense 对象")
+        # Create Sense object (no actual connection)
+        my_sense = sense('/dev/ttyUSB0')  # Update serial port path as needed
+        print("✓ Successfully created Sense object")
         
-        # 检查方法是否存在
+        # Check whether methods exist
         methods = [
             'connect', 'disconnect', 'get_gripper_distance', 'get_encoder_data',
             'get_command_state', 'get_fisheye_camera', 'get_realsense_camera',
@@ -56,27 +56,27 @@ def test_sense_class():
         ]
         for method in methods:
             if hasattr(my_sense, method) and callable(getattr(my_sense, method)):
-                print(f"✓ 方法 {method} 存在")
+                print(f"✓ Method {method} exists")
             else:
-                print(f"✗ 方法 {method} 不存在或不可调用")
+                print(f"✗ Method {method} does not exist or is not callable")
                 return False
         
         return True
     except Exception as e:
-        print(f"✗ 测试失败: {e}")
+        print(f"✗ Test failed: {e}")
         return False
 
 def test_gripper_class():
-    """测试 Gripper 类"""
-    print("\n测试 Gripper 类...")
+    """Test Gripper class."""
+    print("\nTesting Gripper class...")
     try:
         from pika import gripper
         
-        # 创建 Gripper 对象（不实际连接）
-        my_gripper = gripper('/dev/ttyUSB0')  # 请根据实际情况修改串口路径
-        print("✓ 成功创建 Gripper 对象")
+        # Create Gripper object (no actual connection)
+        my_gripper = gripper('/dev/ttyUSB0')  # Update serial port path as needed
+        print("✓ Successfully created Gripper object")
         
-        # 检查方法是否存在
+        # Check whether methods exist
         methods = [
             'connect', 'disconnect', 'enable', 'disable', 'set_zero',
             'set_velocity', 'set_effort', 
@@ -90,27 +90,27 @@ def test_gripper_class():
         ]
         for method in methods:
             if hasattr(my_gripper, method) and callable(getattr(my_gripper, method)):
-                print(f"✓ 方法 {method} 存在")
+                print(f"✓ Method {method} exists")
             else:
-                print(f"✗ 方法 {method} 不存在或不可调用")
+                print(f"✗ Method {method} does not exist or is not callable")
                 return False
         
         return True
     except Exception as e:
-        print(f"✗ 测试失败: {e}")
+        print(f"✗ Test failed: {e}")
         return False
 
 def test_ego_class():
-    """测试 Ego 类"""
-    print("\n测试 Ego 类...")
+    """Test Ego class."""
+    print("\nTesting Ego class...")
     try:
         from pika import ego
 
-        # 创建 Ego 对象（不实际连接）
+        # Create Ego object (no actual connection)
         my_ego = ego('/dev/ttyUSB0')
-        print("✓ 成功创建 Ego 对象")
+        print("✓ Successfully created Ego object")
 
-        # 检查方法是否存在
+        # Check whether methods exist
         methods = [
             'connect', 'disconnect',
             'get_imu_data', 'get_accelerometer', 'get_gyroscope',
@@ -120,61 +120,61 @@ def test_ego_class():
         ]
         for method in methods:
             if hasattr(my_ego, method) and callable(getattr(my_ego, method)):
-                print(f"✓ 方法 {method} 存在")
+                print(f"✓ Method {method} exists")
             else:
-                print(f"✗ 方法 {method} 不存在或不可调用")
+                print(f"✗ Method {method} does not exist or is not callable")
                 return False
 
         return True
     except Exception as e:
-        print(f"✗ 测试失败: {e}")
+        print(f"✗ Test failed: {e}")
         return False
 
 def test_camera_modules():
-    """测试相机模块"""
-    print("\n测试相机模块...")
+    """Test camera modules."""
+    print("\nTesting camera modules...")
     try:
         from pika.camera.fisheye import FisheyeCamera
-        print("✓ 成功导入 FisheyeCamera 类")
+        print("✓ Successfully imported FisheyeCamera class")
         
         try:
             from pika.camera.realsense import RealSenseCamera
-            print("✓ 成功导入 RealSenseCamera 类")
+            print("✓ Successfully imported RealSenseCamera class")
         except ImportError:
-            print("! RealSenseCamera 导入失败，可能是 pyrealsense2 库未安装")
+            print("! Failed to import RealSenseCamera; pyrealsense2 may not be installed")
         
         return True
     except Exception as e:
-        print(f"✗ 测试失败: {e}")
+        print(f"✗ Test failed: {e}")
         return False
 
 def main():
-    """主函数"""
-    print("===== Pika SDK 测试 =====")
+    """Main function."""
+    print("===== Pika SDK Test =====")
     
-    # 测试导入
+    # Test imports
     if not test_import():
-        print("\n导入测试失败，请检查安装")
+        print("\nImport test failed. Please check your installation.")
         return
     
-    # 测试串口通信模块
+    # Test serial communication module
     test_serial_comm()
     
-    # 测试 Sense 类
+    # Test Sense class
     test_sense_class()
     
-    # 测试 Gripper 类
+    # Test Gripper class
     test_gripper_class()
 
-    # 测试 Ego 类
+    # Test Ego class
     test_ego_class()
 
-    # 测试相机模块
+    # Test camera modules
     test_camera_modules()
     
-    print("\n===== 测试完成 =====")
-    print("注意：这只是基本功能测试，未实际连接设备进行测试")
-    print("要进行实际设备测试，请运行 examples 目录中的示例程序")
+    print("\n===== Test Complete =====")
+    print("Note: This is a basic functionality test only; no devices were actually connected.")
+    print("For real device testing, run the example programs in the examples directory.")
 
 if __name__ == "__main__":
     main()

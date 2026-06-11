@@ -11,6 +11,8 @@
 ![ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange.svg)
 ![python](https://img.shields.io/badge/Python-%3C%3D%203.9-blue.svg)
 
+</div>
+
 ## 介绍
 
 Pika SDK 是一款专为 Pika 系列设备设计的 Python 软件开发工具包，旨在提供简单易用且功能强大的编程接口。该 SDK 支持两种主要设备类型：Pika Sense 和 Pika Gripper，使开发者能够轻松地控制和访问这些设备的各项功能。

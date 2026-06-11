@@ -11,6 +11,8 @@
 ![ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange.svg)
 ![python](https://img.shields.io/badge/Python-%3C%3D%203.9-blue.svg)
 
+</div>
+
 ## Introduction
 
 Pika SDK is a Python software development kit designed for Pika series devices, providing simple yet powerful programming interfaces. The SDK supports two main device types: Pika Sense and Pika Gripper, enabling developers to easily control and access the full functionality of these devices.
