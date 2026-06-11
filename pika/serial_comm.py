@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-串口通信模块，用于与Pika系列设备进行通信
+Serial communication module for communicating with Pika series devices
 """
 
 import threading
@@ -10,21 +10,21 @@ import time
 import json
 import serial
 import logging
-import re # 导入re模块用于正则表达式
-import struct # 导入struct模块
+import re # Import re module for regular expressions
+import struct # Import struct module
 
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("pika.serial_comm")
 
 class SerialComm:
     """
-    串口通信类，负责与设备的串口通信
+    Serial communication class, responsible for serial communication with devices
     
-    参数:
-        port (str): 串口设备路径，默认为'/dev/ttyUSB0'
-        baudrate (int): 波特率，默认为460800
-        timeout (float): 超时时间，默认为1.0秒
+    Args:
+        port (str): Serial port device path, default '/dev/ttyUSB0'
+        baudrate (int): Baud rate, default 460800
+        timeout (float): Timeout in seconds, default 1.0
     """
     def __init__(self, port=r"/dev/ttyUSB0", baudrate=460800, timeout=1.0):
         self.port = port
@@ -41,10 +41,10 @@ class SerialComm:
     
     def connect(self):
         """
-        连接串口设备
+        Connect to serial port device
         
-        返回:
-            bool: 连接是否成功
+        Returns:
+            bool: Whether the connection succeeded
         """
         try:
             self.serial = serial.Serial(
@@ -56,35 +56,35 @@ class SerialComm:
                 timeout=self.timeout
             )
             self.is_connected = True
-            logger.info(f"成功连接到串口设备: {self.port}")
+            logger.info(f"Successfully connected to serial port device: {self.port}")
             return True
         except serial.SerialException as e:
-            logger.error(f"连接串口设备失败: {e}")
+            logger.error(f"Failed to connect to serial port device: {e}")
             self.is_connected = False
             return False
     
     def disconnect(self):
         """
-        断开串口连接
+        Disconnect serial port
         """
         self.stop_reading_thread()
         if self.serial and self.is_connected:
             self.serial.close()
             self.is_connected = False
-            logger.info(f"已断开串口设备连接: {self.port}")
+            logger.info(f"Disconnected from serial port device: {self.port}")
     
     def send_data(self, data):
         """
-        发送数据到串口
+        Send data to serial port
         
-        参数:
-            data (bytes): 要发送的数据
+        Args:
+            data (bytes): Data to send
             
-        返回:
-            bool: 发送是否成功
+        Returns:
+            bool: Whether sending succeeded
         """
         if not self.is_connected or not self.serial:
-            logger.error("串口未连接，无法发送数据")
+            logger.error("Serial port not connected, unable to send data")
             return False
         
         try:
@@ -92,67 +92,67 @@ class SerialComm:
             self.serial.flush()
             return True
         except serial.SerialException as e:
-            logger.error(f"发送数据失败: {e}")
+            logger.error(f"Failed to send data: {e}")
             return False
     
     def send_command(self, command_type, value=0, big_endian=False):
         """
-        发送命令到设备
+        Send command to device
         
-        参数:
-            command_type (int): 命令类型
-            value (float): 命令值，默认为0.0
-            big_endian (bool): 是否使用大端序，默认为False（小端序）
+        Args:
+            command_type (int): Command type
+            value (float): Command value, default 0.0
+            big_endian (bool): Whether to use big-endian, default False (little-endian)
             
-        返回:
-            bool: 发送是否成功
+        Returns:
+            bool: Whether sending succeeded
         """ 
         try:
-            # 构建命令数据
+            # Build command data
             data = bytearray()
-            data.append(command_type)  # 命令类型
+            data.append(command_type)  # Command type
             
             if big_endian:
-                value_bytes = bytearray(struct.pack('>i', value))  # 大端序
+                value_bytes = bytearray(struct.pack('>i', value))  # Big-endian
             else:
-                value_bytes = bytearray(struct.pack('<f', value))  # 小端序
+                value_bytes = bytearray(struct.pack('<f', value))  # Little-endian
             
             data.extend(value_bytes)
             
-            # 添加结束符 \r\n
+            # Add terminator \r\n
             data.extend(b'\r\n')
             
             return self.send_data(data)
         except Exception as e:
-            logger.error(f"构建命令数据失败: {e}")
+            logger.error(f"Failed to build command data: {e}")
             return False
         
     def get_device_info_command(self):
         """
-        下发GET_INFO\r\n命令到设备
+        Send GET_INFO\r\n command to device
         
-        返回:
-            bool: 发送是否成功
+        Returns:
+            bool: Whether sending succeeded
         """
         try:
-            # 构建GET_INFO命令数据
+            # Build GET_INFO command data
             command = 'GET_INFO\r\n'
             data = command.encode('utf-8')
             
             return self.send_data(data)
         except Exception as e:
-            logger.error(f"发送GET_INFO命令失败: {e}")
+            logger.error(f"Failed to send GET_INFO command: {e}")
             return False
         
     def read_data(self):
         """
-        从串口读取数据
+        Read data from serial port
         
-        返回:
-            bytes: 读取到的数据
+        Returns:
+            bytes: Data read
         """
         if not self.is_connected or not self.serial:
-            logger.error("串口未连接，无法读取数据")
+            logger.error("Serial port not connected, unable to read data")
             return b''
         
         try:
@@ -160,64 +160,64 @@ class SerialComm:
                 return self.serial.read(self.serial.in_waiting)
             return b''
         except serial.SerialException as e:
-            logger.error(f"读取数据失败: {e}")
+            logger.error(f"Failed to read data: {e}")
             return b''
     
     def _reading_thread_func(self):
         """
-        读取线程函数，持续从串口读取数据并解析
+        Reading thread function, continuously reads data from serial port and parses it
         """
-        logger.info("启动串口读取线程")
+        logger.info("Starting serial port reading thread")
         while not self.stop_thread:
             if not self.is_connected:
                 time.sleep(0.1)
                 continue
             
             try:
-                # 读取数据
+                # Read data
                 data = self.read_data()
                 if data:
-                    # 将读取到的数据添加到缓冲区
+                    # Append read data to buffer
                     self.buffer += data.decode('utf-8', errors='ignore')
                     
-                    # 查找完整的JSON对象
+                    # Find complete JSON objects
                     json_data = self._find_json()
                     if json_data:
-                        # 如果设置了回调函数，则调用回调函数
+                        # If callback is set, invoke it
                         if self.callback:
                             self.callback(json_data)
                         
-                        # 更新最新数据
+                        # Update latest data
                         with self.data_lock:
                             self.latest_data = json_data
-                    # 缓冲区数据长度大于2000字节就将其清空
+                    # Clear buffer if data length exceeds 2000 bytes
                     else:
                         if len(self.buffer) > 2000:
                             self.buffer = ""
                 
-                # 短暂休眠，避免CPU占用过高
+                # Brief sleep to avoid high CPU usage
                 time.sleep(0.001)
             except Exception as e:
-                logger.error(f"读取线程异常: {e}")
+                logger.error(f"Reading thread exception: {e}")
                 time.sleep(0.1)
         
-        logger.info("串口读取线程已停止")
+        logger.info("Serial port reading thread stopped")
     
     def _find_json(self):
         """
-        在缓冲区中查找完整的JSON对象
+        Find complete JSON objects in the buffer
         
-        返回:
-            dict: 解析到的JSON对象，如果没有找到则返回None
+        Returns:
+            dict: Parsed JSON object, or None if not found
         """
         try:
-            # 查找JSON对象的开始和结束位置
+            # Find start and end positions of JSON object
             start = self.buffer.find('{')
             if start == -1:
                 self.buffer = ""
                 return None
             
-            # 使用栈来匹配括号
+            # Use stack to match braces
             stack = []
             for i in range(start, len(self.buffer)):
                 if self.buffer[i] == '{':
@@ -225,36 +225,36 @@ class SerialComm:
                 elif self.buffer[i] == '}':
                     if stack:
                         stack.pop()
-                        if not stack:  # 找到完整的JSON对象
+                        if not stack:  # Found complete JSON object
                             json_str = self.buffer[start:i+1]
                             self.buffer = self.buffer[i+1:]
                             
-                            # --- 关键修改：处理多余的逗号 ---
+                            # --- Key fix: handle trailing commas ---
                             cleaned_json_str = re.sub(r',\s*}', '}', json_str)
                             cleaned_json_str = re.sub(r',\s*\]', ']', cleaned_json_str)
                             
                             return json.loads(cleaned_json_str)
             
-            # 如果没有找到完整的JSON对象，保留缓冲区
+            # If no complete JSON object found, keep buffer
             return None
         except json.JSONDecodeError as e:
-            # logger.error(f"JSON解析错误: {e}")
-            self.buffer = ""  # 跳过错误的开始位置
+            # logger.error(f"JSON parse error: {e}")
+            self.buffer = ""  # Skip erroneous start position
             return None
         except Exception as e:
-            logger.error(f"通信Json异常: {e}")
+            logger.error(f"Communication JSON exception: {e}")
             self.buffer = ""
             return None
     
     def start_reading_thread(self, callback=None):
         """
-        启动读取线程
+        Start reading thread
         
-        参数:
-            callback (callable): 数据回调函数，接收解析后的JSON对象
+        Args:
+            callback (callable): Data callback function, receives parsed JSON objects
         """
         if self.reading_thread and self.reading_thread.is_alive():
-            logger.warning("读取线程已经在运行")
+            logger.warning("Reading thread is already running")
             return
         
         self.callback = callback
@@ -265,27 +265,26 @@ class SerialComm:
     
     def stop_reading_thread(self):
         """
-        停止读取线程
+        Stop reading thread
         """
         self.stop_thread = True
         if self.reading_thread and self.reading_thread.is_alive():
             self.reading_thread.join(timeout=1.0)
-            logger.info("读取线程已停止")
+            logger.info("Reading thread stopped")
     
     def get_latest_data(self):
         """
-        获取最新的数据
+        Get latest data
         
-        返回:
-            dict: 最新的数据
+        Returns:
+            dict: Latest data
         """
         with self.data_lock:
             return self.latest_data.copy()
     
     def __del__(self):
         """
-        析构函数，确保资源被正确释放
+        Destructor to ensure resources are released
         """
         self.disconnect()
-
 

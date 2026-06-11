@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Ego 设备相机和IMU测试示例
-同时打开鱼眼相机、RealSense彩色/深度相机，并在终端输出IMU数据
+Pika Ego camera and IMU test example.
+Opens fisheye camera, RealSense color/depth cameras, and prints IMU data to the terminal.
 """
 
 import cv2
@@ -13,7 +13,7 @@ import sys
 import threading
 from collections import deque
 
-# 添加 SDK 路径
+# Add SDK path
 sys.path.insert(0, '../..')
 
 from pika import ego
@@ -21,11 +21,15 @@ from pika import ego
 
 def quaternion_to_euler(w, x, y, z):
     """
-    四元数转欧拉角 (roll, pitch, yaw)
-    输入: w, x, y, z - 四元数分量
-    输出: roll, pitch, yaw - 欧拉角 (rad)
+    Convert quaternion to Euler angles (roll, pitch, yaw).
+
+    Args:
+        w, x, y, z: Quaternion components.
+
+    Returns:
+        roll, pitch, yaw: Euler angles in radians.
     """
-    # 归一化四元数
+    # Normalize quaternion
     norm = math.sqrt(w * w + x * x + y * y + z * z)
     if norm < 1e-6:
         return 0.0, 0.0, 0.0
@@ -56,14 +60,14 @@ def quaternion_to_euler(w, x, y, z):
 
 
 def print_imu_data(my_ego, stop_flag):
-    """在终端输出IMU数据"""
-    print("\n===== IMU 数据输出 =====")
-    print("格式: 加速度 | 角速度 | 磁力计 | 欧拉角(计算) | 四元数")
+    """Print IMU data to the terminal."""
+    print("\n===== IMU Data Output =====")
+    print("Format: Acceleration | Angular Velocity | Magnetometer | Euler (computed) | Quaternion")
     print("=" * 150)
 
-    # 用于控制输出频率
+    # Control output rate
     last_print_time = time.time()
-    print_interval = 0.1  # 10Hz 输出
+    print_interval = 0.1  # 10 Hz output
 
     while not stop_flag[0]:
         current_time = time.time()
@@ -73,10 +77,10 @@ def print_imu_data(my_ego, stop_flag):
             mag = my_ego.get_magnetometer()
             quat = my_ego.get_quaternion()
 
-            # 从四元数计算欧拉角
+            # Compute Euler angles from quaternion
             w, x, y, z = quat
             roll, pitch, yaw = quaternion_to_euler(w, x, y, z)
-            euler_str = f"Euler(计算): [R:{roll:7.3f}, P:{pitch:7.3f}, Y:{yaw:7.3f}]"
+            euler_str = f"Euler(computed): [R:{roll:7.3f}, P:{pitch:7.3f}, Y:{yaw:7.3f}]"
             quat_str = f"Quat: [w:{w:6.3f}, x:{x:6.3f}, y:{y:6.3f}, z:{z:6.3f}]"
 
             print(
@@ -93,70 +97,70 @@ def print_imu_data(my_ego, stop_flag):
 
 
 def main():
-    print("===== Pika Ego 相机和IMU测试 =====")
+    print("===== Pika Ego Camera and IMU Test =====")
 
-    # 创建 Ego 设备对象
-    # 注意：请根据实际情况修改串口设备路径和相机索引
+    # Create Ego device object
+    # Note: Update serial port path and camera index for your setup
     my_ego = ego('/dev/ttyUSB81')
 
-    # 设置鱼眼相机索引
+    # Set fisheye camera index
     my_ego.set_fisheye_camera_index(81)
 
-    # 设置 RealSense 相机序列号
+    # Set RealSense camera serial number
     my_ego.set_realsense_serial_number('260422273747')
 
-    # 连接设备
-    print("\n正在连接设备...")
+    # Connect device
+    print("\nConnecting to device...")
     if not my_ego.connect():
-        print("连接设备失败，请检查串口路径和设备连接")
+        print("Failed to connect. Please check serial port path and device connection.")
         return
 
-    print("设备连接成功！")
+    print("Device connected successfully!")
 
-    # 获取鱼眼相机
-    print("\n正在初始化鱼眼相机...")
+    # Get fisheye camera
+    print("\nInitializing fisheye camera...")
     fisheye_camera = my_ego.get_fisheye_camera()
     if not fisheye_camera:
-        print("警告: 无法初始化鱼眼相机")
+        print("Warning: Failed to initialize fisheye camera.")
 
-    # 获取 RealSense 相机
-    print("正在初始化 RealSense 相机...")
+    # Get RealSense camera
+    print("Initializing RealSense camera...")
     realsense_camera = my_ego.get_realsense_camera()
     if not realsense_camera:
-        print("警告: 无法初始化 RealSense 相机")
+        print("Warning: Failed to initialize RealSense camera.")
 
-    # 启动 IMU 输出线程
+    # Start IMU output thread
     stop_flag = [False]
     imu_thread = threading.Thread(target=print_imu_data, args=(my_ego, stop_flag))
     imu_thread.daemon = True
     imu_thread.start()
 
-    print("\n相机窗口已打开，按 'q' 退出")
+    print("\nCamera windows opened. Press 'q' to quit.")
     print("=" * 80)
 
     try:
         while True:
-            # 显示鱼眼相机画面
+            # Display fisheye camera feed
             if fisheye_camera:
                 success, fisheye_frame = fisheye_camera.get_frame()
                 if success and fisheye_frame is not None:
                     cv2.imshow('Fisheye Camera', fisheye_frame)
 
-            # 显示 RealSense 画面
+            # Display RealSense feed
             if realsense_camera:
                 success, color_frame, depth_frame = realsense_camera.get_frames()
                 if success and color_frame is not None:
                     cv2.imshow('RealSense Color', color_frame)
 
                     if depth_frame is not None:
-                        # 将深度图归一化以便显示
+                        # Normalize depth map for display
                         depth_colormap = cv2.applyColorMap(
                             cv2.convertScaleAbs(depth_frame, alpha=0.03),
                             cv2.COLORMAP_JET
                         )
                         cv2.imshow('RealSense Depth', depth_colormap)
 
-            # 检测按键
+            # Check key press
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
@@ -164,23 +168,23 @@ def main():
             time.sleep(0.001)
 
     except KeyboardInterrupt:
-        print("\n\n用户中断")
+        print("\n\nInterrupted by user.")
     except Exception as e:
-        print(f"\n运行异常: {e}")
+        print(f"\nRuntime error: {e}")
     finally:
-        # 停止 IMU 输出线程
+        # Stop IMU output thread
         stop_flag[0] = True
         time.sleep(0.2)
 
-        # 关闭所有 OpenCV 窗口
+        # Close all OpenCV windows
         cv2.destroyAllWindows()
 
-        # 断开连接
-        print("\n\n正在断开设备连接...")
+        # Disconnect
+        print("\n\nDisconnecting device...")
         my_ego.disconnect()
-        print("设备已断开")
+        print("Device disconnected.")
 
-    print("\n===== 测试结束 =====")
+    print("\n===== Test Complete =====")
 
 
 if __name__ == "__main__":

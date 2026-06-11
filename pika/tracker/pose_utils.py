@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 import numpy as np
 
-# 辅助函数：将四元数和位置转换为4x4变换矩阵
+# Helper function: convert quaternion and position to a 4x4 transformation matrix
 def xyzQuaternion2matrix(x, y, z, qx, qy, qz, qw):
     """
-    将位置和四元数转换为4x4变换矩阵
+    Convert position and quaternion to a 4x4 transformation matrix
     """
-    # 创建旋转矩阵
+    # Create rotation matrix
     rot_matrix = np.array([
         [1 - 2*qy*qy - 2*qz*qz, 2*qx*qy - 2*qz*qw, 2*qx*qz + 2*qy*qw, 0],
         [2*qx*qy + 2*qz*qw, 1 - 2*qx*qx - 2*qz*qz, 2*qy*qz - 2*qx*qw, 0],
@@ -14,19 +14,19 @@ def xyzQuaternion2matrix(x, y, z, qx, qy, qz, qw):
         [0, 0, 0, 1]
     ])
     
-    # 设置平移部分
+    # Set translation part
     rot_matrix[0, 3] = x
     rot_matrix[1, 3] = y
     rot_matrix[2, 3] = z
     
     return rot_matrix
 
-# 辅助函数：将xyz位置和rpy角度转换为4x4变换矩阵
+# Helper function: convert xyz position and rpy angles to a 4x4 transformation matrix
 def xyzrpy2Mat(x, y, z, roll, pitch, yaw):
     """
-    将xyz位置和rpy角度转换为4x4变换矩阵
+    Convert xyz position and rpy angles to a 4x4 transformation matrix
     """
-    # 创建旋转矩阵
+    # Create rotation matrix
     cr, sr = np.cos(roll), np.sin(roll)
     cp, sp = np.cos(pitch), np.sin(pitch)
     cy, sy = np.cos(yaw), np.sin(yaw)
@@ -40,20 +40,20 @@ def xyzrpy2Mat(x, y, z, roll, pitch, yaw):
     
     return rot_matrix
 
-# 辅助函数：将4x4变换矩阵转换为位置和四元数
+# Helper function: convert a 4x4 transformation matrix to position and quaternion
 def matrixToXYZQuaternion(matrix):
     """
-    将4x4变换矩阵转换为位置和四元数
+    Convert a 4x4 transformation matrix to position and quaternion
     """
-    # 提取位置
+    # Extract position
     x = matrix[0, 3]
     y = matrix[1, 3]
     z = matrix[2, 3]
     
-    # 提取旋转矩阵部分
+    # Extract rotation matrix part
     rot_matrix = matrix[:3, :3]
     
-    # 计算四元数
+    # Compute quaternion
     trace = rot_matrix[0, 0] + rot_matrix[1, 1] + rot_matrix[2, 2]
     
     if trace > 0:

@@ -2,31 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Gripper 示例代码
-演示如何查询 pika Gripper 固件版本信息
+Pika Gripper example.
+Demonstrates how to query Pika Gripper firmware version information.
 """
 
 import time
-# 从 pika.gripper 模块导入 Gripper 类
-from pika.gripper import Gripper 
+from pika.gripper import Gripper
 
 def main():
-    # 创建 Gripper 对象并连接
-    print("正在连接 Pika Gripper 设备...")
-    # 使用 Gripper 类进行实例化
-    my_gripper = Gripper("/dev/ttyUSB0")  # 请根据实际情况修改串口路径,默认参数为：/dev/ttyUSB0
+    # Create Gripper object and connect
+    print("Connecting to Pika Gripper device...")
+    my_gripper = Gripper("/dev/ttyUSB0")  # Update serial port path as needed; default: /dev/ttyUSB0
     
     if not my_gripper.connect():
-        print("连接 Pika Gripper 设备失败，请检查设备连接和串口路径")
+        print("Failed to connect to Pika Gripper. Please check device connection and serial port path.")
         return
     
-    print("成功连接到 Pika gripper 设备")
-    print("获取版本信息...")
+    print("Successfully connected to Pika Gripper device.")
+    print("Fetching version information...")
     
-    # 每0.1秒发送一次get_version()命令,循环5次
+    # Send get_version() every 0.1 seconds, 5 times
     for _ in range(5):
         my_gripper.get_version()
-        # 休眠0.1秒等待数据返回
+        # Sleep 0.1 seconds waiting for response
         time.sleep(0.1)
 
 

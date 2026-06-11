@@ -2,75 +2,71 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Sense 示例代码
-演示如何快速打开相机并保存图像
+Pika Sense example.
+Demonstrates how to quickly open the camera and save images.
 """
 
-import time
 import cv2
-import numpy as np
 from pika import sense
 
-
 def main():
-    # 创建 Sense 对象并连接
-    print("正在连接 Pika Sense 设备...")
-    my_sense = sense('/dev/ttyUSB81')  # 请根据实际情况修改串口路径,默认参数为：/dev/ttyUSB0
+    # Create Sense object and connect
+    print("Connecting to Pika Sense device...")
+    my_sense = sense('/dev/ttyUSB81')  # Update serial port path as needed; default: /dev/ttyUSB0
     
     if not my_sense.connect():
-        print("连接 Pika Sense 设备失败，请检查设备连接和串口路径")
+        print("Failed to connect to Pika Sense. Please check device connection and serial port path.")
         return
     
-    print("成功连接到 Pika Sense 设备")
+    print("Successfully connected to Pika Sense device.")
     
-    # 设置相机参数
+    # Set camera parameters
     my_sense.set_camera_param(640, 480, 30)
-    # 设置 Fisheye 相机索引
+    # Set fisheye camera index
     my_sense.set_fisheye_camera_index(81)
-    # 设置 Realsense 相机序列号
+    # Set RealSense camera serial number
     my_sense.set_realsense_serial_number('230322270988')
-    
-    #  获取鱼眼相机对象
+    # Get fisheye camera object
     fisheye_camera = my_sense.get_fisheye_camera()
-    # 获取 Realsense 相机对象
+    # Get RealSense camera object
     realsense_camera = my_sense.get_realsense_camera()
     
     while True:
         if fisheye_camera:
-                print("\n尝试获取鱼眼相机图像...")
+                print("\nAttempting to capture fisheye camera image...")
                 success, frame = fisheye_camera.get_frame()
                 if success and frame is not None:
-                    print("成功获取鱼眼相机图像")
+                    print("Successfully captured fisheye camera image.")
                     cv2.imshow("Fisheye Camera", frame)
                     cv2.imwrite("fisheye_image.jpg", frame)
-                    print("已保存鱼眼相机图像到 fisheye_image.jpg")
+                    print("Saved fisheye camera image to fisheye_image.jpg")
                 else:
-                    print("获取鱼眼相机图像失败或帧为空")
+                    print("Failed to capture fisheye camera image or frame is empty.")
         else:
-            print("鱼眼相机对象获取失败，跳过图像获取")
+            print("Failed to get fisheye camera object, skipping image capture.")
 
         if realsense_camera:
-            print("\n尝试获取 RealSense 相机图像...")
+            print("\nAttempting to capture RealSense camera images...")
             success_color, color_frame = realsense_camera.get_color_frame()
             if success_color and color_frame is not None:
-                print("成功获取 RealSense 彩色图像")
+                print("Successfully captured RealSense color image.")
                 cv2.imshow("RealSense Color", color_frame)
                 cv2.imwrite("realsense_color.jpg", color_frame)
-                print("已保存 RealSense 彩色图像到 realsense_color.jpg")
+                print("Saved RealSense color image to realsense_color.jpg")
             else:
-                print("获取 RealSense 彩色图像失败或帧为空")
+                print("Failed to capture RealSense color image or frame is empty.")
             
             success_depth, depth_frame = realsense_camera.get_depth_frame()
             if success_depth and depth_frame is not None:
-                print("成功获取 RealSense 深度图像")
+                print("Successfully captured RealSense depth image.")
                 depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_frame, alpha=0.03), cv2.COLORMAP_JET)
                 cv2.imshow("RealSense Depth", depth_colormap)
                 cv2.imwrite("gripper_realsense_depth.jpg", depth_colormap)
-                print("已保存 RealSense 深度图像到 gripper_realsense_depth.jpg")
+                print("Saved RealSense depth image to gripper_realsense_depth.jpg")
             else:
-                print("获取 RealSense 深度图像失败或帧为空")
+                print("Failed to capture RealSense depth image or frame is empty.")
         else:
-            print("RealSense 相机对象获取失败，跳过图像获取")
+            print("Failed to get RealSense camera object, skipping image capture.")
 
         cv2.waitKey(1) 
         

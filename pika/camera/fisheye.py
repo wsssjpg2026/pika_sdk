@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-鱼眼相机模块 - 提供对Pika设备上鱼眼相机的访问
+Fisheye camera module - provides access to the fisheye camera on Pika devices
 """
 
 import cv2
@@ -10,20 +10,20 @@ import logging
 import numpy as np
 import threading
 import time
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('pika.camera.fisheye')
 
 class FisheyeCamera:
     """
-    鱼眼相机类，提供对Pika设备上鱼眼相机的访问
+    Fisheye camera class, provides access to the fisheye camera on Pika devices
     
-    属性:
-        camera_width (int): 相机宽度，默认为1280
-        camera_height (int): 相机高度，默认为720
-        camera_fps (int): 相机帧率，默认为30
-        device_id (int): 相机设备ID，默认为0
-        is_connected (bool): 设备是否连接，默认为False
+    Attributes:
+        camera_width (int): Camera width, default 1280
+        camera_height (int): Camera height, default 720
+        camera_fps (int): Camera frame rate, default 30
+        device_id (int): Camera device ID, default 0
+        is_connected (bool): Whether the device is connected, default False
     """
     
     def __init__(self, camera_width=1280, camera_height=720, camera_fps=30, device_id=0, fisheye_thread_fps=100):
@@ -44,22 +44,22 @@ class FisheyeCamera:
     
     def connect(self):
         """
-        连接鱼眼相机
+        Connect to the fisheye camera
         
-        返回:
-            bool: 连接是否成功
+        Returns:
+            bool: Whether the connection succeeded
         """
         try:
-            # OpenCV 4.13.0版本没有setLogLevel
+            # OpenCV 4.13.0 does not have setLogLevel
             if hasattr(cv2, 'setLogLevel'):
                 cv2.setLogLevel(0)
-            # 指定V4L2后端，防止FFMPEG自动降级导致设备索引错乱
+            # Use V4L2 backend to prevent FFMPEG auto-downgrade causing device index mismatch
             self.cap = cv2.VideoCapture(self.device_id, cv2.CAP_V4L2)
 
-            # 检查
+            # Check
             backend_name = self.cap.getBackendName()
             if "v4l2" not in backend_name.lower():
-                logger.error(f"相机后端错误: 期望V4L2，实际为{backend_name}，设备ID: {self.device_id}")
+                logger.error(f"Camera backend error: expected V4L2, got {backend_name}, device ID: {self.device_id}")
                 self.cap.release()
                 return False
 
@@ -67,40 +67,40 @@ class FisheyeCamera:
             self.cap.set(cv2.CAP_PROP_FOURCC, self.fourcc)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
-            self.cap.set(cv2.CAP_PROP_FPS, self.camera_fps) # 该设置似乎不起作用
+            self.cap.set(cv2.CAP_PROP_FPS, self.camera_fps) # This setting seems to have no effect
             
             if not self.cap.isOpened():
-                logger.error(f"无法打开鱼眼相机，设备ID: {self.device_id}")
+                logger.error(f"Failed to open fisheye camera, device ID: {self.device_id}")
                 return False
             
             self.is_connected = True
-            logger.info(f"成功连接到鱼眼相机，设备ID: {self.device_id}")
+            logger.info(f"Successfully connected to fisheye camera, device ID: {self.device_id}")
             self.start_reading_thread()
             
             return True
         except Exception as e:
-            logger.error(f"连接鱼眼相机异常: {e}")
+            logger.error(f"Exception connecting to fisheye camera: {e}")
             return False
     
     def disconnect(self):
         """
-        断开鱼眼相机连接
+        Disconnect from the fisheye camera
         """
         self.stop_reading_thread()
         if self.cap and self.is_connected:
             self.cap.release()
             self.is_connected = False
-            logger.info(f"已断开鱼眼相机连接，设备ID: {self.device_id}")
+            logger.info(f"Disconnected from fisheye camera, device ID: {self.device_id}")
     
     def start_reading_thread(self):
         """
-        启动读取线程
+        Start the reading thread
         
-        参数:
-            callback (callable): 数据回调函数，接收解析后的JSON对象
+        Args:
+            callback (callable): Data callback function, receives parsed JSON objects
         """
         if self.reading_thread and self.reading_thread.is_alive():
-            logger.warning("读取线程已经在运行")
+            logger.warning("Reading thread is already running")
             return
         self.stop_thread = False
         self.reading_thread = threading.Thread(target=self._reading_thread_func)
@@ -109,23 +109,23 @@ class FisheyeCamera:
         
     def stop_reading_thread(self):
         """
-        停止读取线程
+        Stop the reading thread
         """
         self.stop_thread = True
         if self.reading_thread and self.reading_thread.is_alive():
             self.reading_thread.join(timeout=1.0)
-            logger.info("读取线程已停止")
+            logger.info("Reading thread stopped")
     
     def _reading_thread_func(self):
         
-        logger.info("启动鱼眼相机高频读取线程")
+        logger.info("Starting fisheye camera high-frequency reading thread")
         time_interval = 1 / self.fisheye_thread_fps
         while not self.stop_thread:
             try:
-                ret, frame = self.cap.read() # 非常高频，至少200Hz, 因此不需要计算等待
+                ret, frame = self.cap.read() # Very high frequency, at least 200Hz, so no need to compute wait time
                 
                 if not ret:
-                    logger.warning("读取图像失败")
+                    logger.warning("Failed to read image")
                     break
                 
                 with self.last_image_lock:
@@ -135,23 +135,23 @@ class FisheyeCamera:
                 time.sleep(time_interval)
                 
             except Exception as e:
-                logger.error(f"获取图像异常: {e}")
+                logger.error(f"Exception getting image: {e}")
                 break
         
-        logger.info("鱼眼相机高频读取线程已停止")
+        logger.info("Fisheye camera high-frequency reading thread stopped")
         
     def get_frame(self):
         return self.last_image_flag, self.last_image
     
     def get_camera_info(self):
         """
-        获取相机信息
+        Get camera information
         
-        返回:
-            dict: 相机信息
+        Returns:
+            dict: Camera information
         """
         if not self.is_connected or not self.cap:
-            logger.warning("相机未连接，无法获取信息")
+            logger.warning("Camera not connected, unable to get information")
             return {}
         
         try:
@@ -166,11 +166,11 @@ class FisheyeCamera:
                 'device_id': self.device_id
             }
         except Exception as e:
-            logger.error(f"获取相机信息异常: {e}")
+            logger.error(f"Exception getting camera information: {e}")
             return {}
     
     def __del__(self):
         """
-        析构函数，确保资源被正确释放
+        Destructor to ensure resources are released
         """
         self.disconnect()

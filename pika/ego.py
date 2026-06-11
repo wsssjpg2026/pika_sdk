@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Ego 设备类，提供对Pika Ego设备的访问接口
-包含鱼眼相机、RealSense相机和IMU功能
+Pika Ego device class, provides access interface for Pika Ego devices
+Includes fisheye camera, RealSense camera, and IMU functionality
 """
 
 import time
@@ -11,17 +11,17 @@ import logging
 import threading
 from .serial_comm import SerialComm
 
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('pika.ego')
 
 
 class Ego:
     """
-    Pika Ego设备类，提供对Pika Ego设备的访问接口
+    Pika Ego device class, provides access interface for Pika Ego devices
 
-    参数:
-        port (str): 串口设备路径，默认为'/dev/ttyUSB0'
+    Args:
+        port (str): Serial port device path, default '/dev/ttyUSB0'
     """
 
     def __init__(self, port='/dev/ttyUSB0'):
@@ -30,68 +30,68 @@ class Ego:
         self.is_connected = False
         self.data_lock = threading.Lock()
 
-        # IMU数据
+        # IMU data
         self.imu_data = {
-            'acc': [0.0, 0.0, 0.0],   # 加速度计数据 (m/s^2)
-            'gyr': [0.0, 0.0, 0.0],   # 陀螺仪数据 (rad/s)
-            'mag': [0.0, 0.0, 0.0],   # 磁力计数据 (uT)
-            'quat': [1.0, 0.0, 0.0, 0.0]   # 四元数 [w, x, y, z]
+            'acc': [0.0, 0.0, 0.0],   # Accelerometer data (m/s^2)
+            'gyr': [0.0, 0.0, 0.0],   # Gyroscope data (rad/s)
+            'mag': [0.0, 0.0, 0.0],   # Magnetometer data (uT)
+            'quat': [1.0, 0.0, 0.0, 0.0]   # Quaternion [w, x, y, z]
         }
 
-        # 鱼眼相机索引
+        # Fisheye camera index
         self.fisheye_camera_index = 0
 
-        # RealSense相机序列号
+        # RealSense camera serial number
         self.realsense_serial_number = None
 
-        # 相机分辨率和帧率
+        # Camera resolution and frame rate
         self.camera_width = 1280
         self.camera_height = 720
         self.camera_fps = 30
         self.fisheye_thread_fps = 100
 
-        # 相机对象，延迟初始化
+        # Camera objects, lazy initialization
         self._fisheye_camera = None
         self._realsense_camera = None
 
     def connect(self):
         """
-        连接Pika Ego设备
+        Connect to Pika Ego device
 
-        返回:
-            bool: 连接是否成功
+        Returns:
+            bool: Whether the connection succeeded
         """
         if self.is_connected:
-            logger.warning("设备已经连接")
+            logger.warning("Device is already connected")
             return True
 
-        # 连接串口
+        # Connect serial port
         if not self.serial_comm.connect():
-            logger.error("连接设备失败")
+            logger.error("Failed to connect to device")
             return False
 
-        # 启动数据读取线程
+        # Start data reading thread
         self.serial_comm.start_reading_thread(callback=self._data_callback)
         self.is_connected = True
-        logger.info(f"成功连接到Pika Ego设备: {self.port}")
+        logger.info(f"Successfully connected to Pika Ego device: {self.port}")
 
-        # 等待初始数据
+        # Wait for initial data
         time.sleep(0.5)
         return True
 
     def disconnect(self):
         """
-        断开Pika Ego设备连接
+        Disconnect from Pika Ego device
         """
         if not self.is_connected:
             return
 
-        # 断开串口连接
+        # Disconnect serial port
         self.serial_comm.disconnect()
         self.is_connected = False
-        logger.info(f"已断开Pika Ego设备连接: {self.port}")
+        logger.info(f"Disconnected from Pika Ego device: {self.port}")
 
-        # 断开相机连接
+        # Disconnect cameras
         if self._fisheye_camera:
             try:
                 self._fisheye_camera.disconnect()
@@ -106,18 +106,18 @@ class Ego:
 
     def _data_callback(self, data):
         """
-        数据回调函数，处理接收到的JSON数据
+        Data callback function, processes received JSON data
 
-        参数:
-            data (dict): 接收到的JSON数据
+        Args:
+            data (dict): Received JSON data
         """
         try:
             with self.data_lock:
-                # 处理IMU数据
+                # Process IMU data
                 if 'IMU' in data:
                     imu = data['IMU']
 
-                    # 解析加速度计数据 (m/s^2)
+                    # Parse accelerometer data (m/s^2)
                     if 'acc' in imu and isinstance(imu['acc'], list) and len(imu['acc']) >= 3:
                         self.imu_data['acc'] = [
                             float(imu['acc'][0]),
@@ -125,7 +125,7 @@ class Ego:
                             float(imu['acc'][2])
                         ]
 
-                    # 解析陀螺仪数据 (rad/s)
+                    # Parse gyroscope data (rad/s)
                     if 'gyr' in imu and isinstance(imu['gyr'], list) and len(imu['gyr']) >= 3:
                         self.imu_data['gyr'] = [
                             float(imu['gyr'][0]),
@@ -133,7 +133,7 @@ class Ego:
                             float(imu['gyr'][2])
                         ]
 
-                    # 解析磁力计数据 (uT)
+                    # Parse magnetometer data (uT)
                     if 'mag' in imu and isinstance(imu['mag'], list) and len(imu['mag']) >= 3:
                         self.imu_data['mag'] = [
                             float(imu['mag'][0]),
@@ -141,7 +141,7 @@ class Ego:
                             float(imu['mag'][2])
                         ]
 
-                    # 解析四元数 [w, x, y, z]
+                    # Parse quaternion [w, x, y, z]
                     if 'quat' in imu and isinstance(imu['quat'], list) and len(imu['quat']) >= 4:
                         self.imu_data['quat'] = [
                             float(imu['quat'][0]),
@@ -150,87 +150,87 @@ class Ego:
                             float(imu['quat'][3])
                         ]
 
-                # 处理版本信息
+                # Process version information
                 if 'Version' in data:
-                    logger.info(f"设备版本信息: {data['Version']}")
+                    logger.info(f"Device version info: {data['Version']}")
 
         except Exception as e:
-            logger.error(f"处理数据回调异常: {e}")
+            logger.error(f"Exception in data callback: {e}")
 
     def get_imu_data(self):
         """
-        获取IMU原始数据
+        Get raw IMU data
 
-        返回:
-            dict: IMU数据，包含acc、gyr、mag、quat字段
+        Returns:
+            dict: IMU data, containing acc, gyr, mag, quat fields
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认IMU数据")
+            logger.warning("Device not connected, returning default IMU data")
 
         with self.data_lock:
             return self.imu_data.copy()
 
     def get_accelerometer(self):
         """
-        获取加速度计数据
+        Get accelerometer data
 
-        返回:
-            list: [x, y, z] 加速度数据 (m/s^2)
+        Returns:
+            list: [x, y, z] acceleration data (m/s^2)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认加速度计数据")
+            logger.warning("Device not connected, returning default accelerometer data")
 
         with self.data_lock:
             return self.imu_data['acc'].copy()
 
     def get_gyroscope(self):
         """
-        获取陀螺仪数据
+        Get gyroscope data
 
-        返回:
-            list: [x, y, z] 角速度数据 (rad/s)
+        Returns:
+            list: [x, y, z] angular velocity data (rad/s)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认陀螺仪数据")
+            logger.warning("Device not connected, returning default gyroscope data")
 
         with self.data_lock:
             return self.imu_data['gyr'].copy()
 
     def get_magnetometer(self):
         """
-        获取磁力计数据
+        Get magnetometer data
 
-        返回:
-            list: [x, y, z] 磁力计数据 (uT)
+        Returns:
+            list: [x, y, z] magnetometer data (uT)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认磁力计数据")
+            logger.warning("Device not connected, returning default magnetometer data")
 
         with self.data_lock:
             return self.imu_data['mag'].copy()
 
     def get_quaternion(self):
         """
-        获取四元数数据
+        Get quaternion data
 
-        返回:
-            list: [w, x, y, z] 四元数
+        Returns:
+            list: [w, x, y, z] quaternion
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认四元数数据")
+            logger.warning("Device not connected, returning default quaternion data")
 
         with self.data_lock:
             return self.imu_data['quat'].copy()
 
     def set_camera_param(self, camera_width, camera_height, camera_fps, fisheye_thread_fps=100):
         """
-        设置相机分辨率和帧率
+        Set camera resolution and frame rate
 
-        参数:
-            camera_width (int): 相机宽度
-            camera_height (int): 相机高度
-            camera_fps (int): 相机帧率
-            fisheye_thread_fps (int): 鱼眼相机读取线程帧率，默认为100
+        Args:
+            camera_width (int): Camera width
+            camera_height (int): Camera height
+            camera_fps (int): Camera frame rate
+            fisheye_thread_fps (int): Fisheye camera reading thread frame rate, default 100
         """
         self.camera_width = camera_width
         self.camera_height = camera_height
@@ -239,34 +239,34 @@ class Ego:
 
     def set_fisheye_camera_index(self, index):
         """
-        设置鱼眼相机的索引
+        Set fisheye camera index
 
-        参数:
-            index (int): 鱼眼相机索引
+        Args:
+            index (int): Fisheye camera index
         """
         self.fisheye_camera_index = index
 
     def set_realsense_serial_number(self, serial_number):
         """
-        设置RealSense相机序列号
+        Set RealSense camera serial number
 
-        参数:
-            serial_number (str): RealSense相机序列号
+        Args:
+            serial_number (str): RealSense camera serial number
         """
         self.realsense_serial_number = serial_number
 
     def get_fisheye_camera(self):
         """
-        获取鱼眼相机对象
+        Get fisheye camera object
 
-        返回:
-            FisheyeCamera: 鱼眼相机对象
+        Returns:
+            FisheyeCamera: Fisheye camera object
         """
         if not self.is_connected:
-            logger.warning("设备未连接，无法获取鱼眼相机")
+            logger.warning("Device not connected, unable to get fisheye camera")
             return None
 
-        # 延迟导入，避免循环导入
+        # Lazy import to avoid circular imports
         if self._fisheye_camera is None:
             try:
                 from .camera.fisheye import FisheyeCamera
@@ -279,23 +279,23 @@ class Ego:
                 )
                 self._fisheye_camera.connect()
             except Exception as e:
-                logger.error(f"初始化鱼眼相机失败: {e}")
+                logger.error(f"Failed to initialize fisheye camera: {e}")
                 return None
 
         return self._fisheye_camera
 
     def get_realsense_camera(self):
         """
-        获取RealSense相机对象
+        Get RealSense camera object
 
-        返回:
-            RealSenseCamera: RealSense相机对象
+        Returns:
+            RealSenseCamera: RealSense camera object
         """
         if not self.is_connected:
-            logger.warning("设备未连接，无法获取RealSense相机")
+            logger.warning("Device not connected, unable to get RealSense camera")
             return None
 
-        # 延迟导入，避免循环导入
+        # Lazy import to avoid circular imports
         if self._realsense_camera is None:
             try:
                 from .camera.realsense import RealSenseCamera
@@ -307,22 +307,22 @@ class Ego:
                 )
                 self._realsense_camera.connect()
             except Exception as e:
-                logger.error(f"初始化RealSense相机失败: {e}")
+                logger.error(f"Failed to initialize RealSense camera: {e}")
                 return None
 
         return self._realsense_camera
 
     def get_version(self):
         """
-        获取Ego的版本信息
+        Get Ego version information
 
-        返回:
-            tuple: 包含版本信息的元组
+        Returns:
+            tuple: Tuple containing version information
         """
         return self.serial_comm.get_device_info_command()
 
     def __del__(self):
         """
-        析构函数，确保资源被正确释放
+        Destructor to ensure resources are released
         """
         self.disconnect()

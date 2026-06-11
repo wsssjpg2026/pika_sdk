@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-相机模块 - 提供对Pika设备上相机的访问
+Camera module - provides access to cameras on Pika devices
 """
 
 from .fisheye import FisheyeCamera

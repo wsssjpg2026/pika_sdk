@@ -2,74 +2,72 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Sense 示例代码
-演示如何使用 Pika Sense 设备的基本功能
+Pika Sense example.
+Demonstrates controlling a Pika Gripper using Pika Sense encoder data.
 """
 
 import time
 import cv2
 import numpy as np
 from pika import sense
-# 从 pika.gripper 模块导入 Gripper 类
-from pika.gripper import Gripper 
+from pika.gripper import Gripper
 
 def main():
-    # 创建 Sense 对象并连接
-    print("正在连接 Pika Sense 设备...")
-    my_sense = sense('/dev/ttyUSB0')  # 请根据实际情况修改串口路径,默认参数为：/dev/ttyUSB0
+    # Create Sense object and connect
+    print("Connecting to Pika Sense device...")
+    my_sense = sense('/dev/ttyUSB0')  # Update serial port path as needed; default: /dev/ttyUSB0
     
     if not my_sense.connect():
-        print("连接 Pika Sense 设备失败，请检查设备连接和串口路径")
+        print("Failed to connect to Pika Sense. Please check device connection and serial port path.")
         return
     
-    print("成功连接到 Pika Sense 设备")
+    print("Successfully connected to Pika Sense device.")
     
-    # 创建 Gripper 对象并连接
-    print("正在连接 Pika Gripper 设备...")
-    # 使用 Gripper 类进行实例化
-    my_gripper = Gripper("/dev/ttyUSB1")  # 请根据实际情况修改串口路径,默认参数为：/dev/ttyUSB0
+    # Create Gripper object and connect
+    print("Connecting to Pika Gripper device...")
+    my_gripper = Gripper("/dev/ttyUSB1")  # Update serial port path as needed; default: /dev/ttyUSB0
     
     if not my_gripper.connect():
-        print("连接 Pika Gripper 设备失败，请检查设备连接和串口路径")
+        print("Failed to connect to Pika Gripper. Please check device connection and serial port path.")
         return
     
-    print("成功连接到 Pika Gripper 设备")
+    print("Successfully connected to Pika Gripper device.")
 
-    # 启用电机
-    print("\n正在启用电机...")
+    # Enable motor
+    print("\nEnabling motor...")
     if my_gripper.enable():
-        print("电机启用成功")
+        print("Motor enabled successfully.")
     else:
-        print("电机启用失败")
-        # 如果启用失败，后续操作可能无意义，可以考虑退出或增加处理
+        print("Failed to enable motor.")
+        # Consider exiting if enable fails; subsequent operations may not work
     
-    # 等待电机启用
+    # Wait for motor to enable
     time.sleep(1)
     
     while True:
-        # angle 控制方式
-        # 获取编码器数据
+        # Angle control mode
+        # Get encoder data
         encoder_data = my_sense.get_encoder_data()
         
         gripper_value = my_sense.get_gripper_distance()
         
-        print(f"sense gripper 张开距离: {gripper_value:.2f} mm")
+        print(f"Sense gripper opening distance: {gripper_value:.2f} mm")
         
         motor_data = my_gripper.get_motor_data()
-        print(f"电流: {motor_data['Current']} mA")
+        print(f"Current: {motor_data['Current']} mA")
 
-        # 将sense弧度直接发送给gripper
+        # Send Sense angle (radians) directly to Gripper
         my_gripper.set_motor_angle(encoder_data['rad'])
         
-        # 等待一段时间
+        # Wait before next iteration
         time.sleep(0.03)
         
-        # # gripper 控制方式
-        # # 获取 sense 夹爪张开距离
+        # # Gripper distance control mode
+        # # Get Sense gripper opening distance
         # gripper_value = my_sense.get_gripper_distance()
-        # # 将值映射给 gripper 夹爪
+        # # Map value to Gripper
         # my_gripper.set_gripper_distance(gripper_value)
-        # # 等待一段时间
+        # # Wait before next iteration
         # time.sleep(0.03)
     
 

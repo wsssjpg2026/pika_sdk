@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Gripper 设备类，提供对Pika Gripper设备的访问接口
+Pika Gripper device class, provides access interface for Pika Gripper devices
 """
 
 import time
@@ -12,11 +12,11 @@ import threading
 import struct
 from .serial_comm import SerialComm
 
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('pika.gripper')
 
-# 命令类型枚举
+# Command type enumeration
 class CommandType:
     DISABLE = 10    
     ENABLE = 11
@@ -28,10 +28,10 @@ class CommandType:
 
 class Gripper:
     """
-    Pika Gripper设备类，提供对Pika Gripper设备的访问接口
+    Pika Gripper device class, provides access interface for Pika Gripper devices
     
-    参数:
-        port (str): 串口设备路径，默认为'/dev/ttyUSB0'
+    Args:
+        port (str): Serial port device path, default '/dev/ttyUSB0'
     """
     
     def __init__(self, port='/dev/ttyUSB0'):
@@ -41,33 +41,33 @@ class Gripper:
         self.is_connected = False
         self.data_lock = threading.Lock()
         self.motor_data = {
-            'Speed': 0.0,  # 电机当前转速（rad/s）
-            'Current': 0,    # 电机当前相电流（mA）
-            'Position': 0.0  # 电机当前位置（rad）
+            'Speed': 0.0,  # Motor current speed (rad/s)
+            'Current': 0,    # Motor current phase current (mA)
+            'Position': 0.0  # Motor current position (rad)
         }
         self.motor_status = {
-            'Voltage': 0.0,  # 电机驱动器电压(V)
-            'DriverTemp': 0,  # 电机驱动器温度(°C)
-            'MotorTemp': 0,   # 电机温度(°C)
-            'Status': "0x00",  # 电机驱动器状态
-            'BusCurrent': 0    # 母线电流(mA)
+            'Voltage': 0.0,  # Motor driver voltage (V)
+            'DriverTemp': 0,  # Motor driver temperature (°C)
+            'MotorTemp': 0,   # Motor temperature (°C)
+            'Status': "0x00",  # Motor driver status
+            'BusCurrent': 0    # Bus current (mA)
         }
         
         
-        # 鱼眼相机索引
+        # Fisheye camera index
         self.fisheye_camera_index = 0
         
-        # realsense相机序列号
+        # RealSense camera serial number
         self.realsense_serial_number = None
         
-        # 相机分辨率和帧率
+        # Camera resolution and frame rate
         self.camera_width=1280
         self.camera_height=720
         self.camera_fps=30
         self.fisheye_thread_fps=100
         self.device_id=0
         
-        # 相机对象，延迟初始化
+        # Camera objects, lazy initialization
         self._fisheye_camera = None
         self._realsense_camera = None
         
@@ -75,42 +75,42 @@ class Gripper:
     
     def connect(self):
         """
-        连接Pika Gripper设备
+        Connect to Pika Gripper device
         
-        返回:
-            bool: 连接是否成功
+        Returns:
+            bool: Whether the connection succeeded
         """
         if self.is_connected:
-            logger.warning("设备已经连接")
+            logger.warning("Device is already connected")
             return True
         
-        # 连接串口
+        # Connect serial port
         if not self.serial_comm.connect():
-            logger.error("连接设备失败")
+            logger.error("Failed to connect to device")
             return False
         
-        # 启动数据读取线程
+        # Start data reading thread
         self.serial_comm.start_reading_thread(callback=self._data_callback)
         self.is_connected = True
-        logger.info(f"成功连接到Pika Gripper设备: {self.port}")
+        logger.info(f"Successfully connected to Pika Gripper device: {self.port}")
         
-        # 等待初始数据
+        # Wait for initial data
         time.sleep(0.5)
         return True
     
     def disconnect(self):
         """
-        断开Pika Gripper设备连接
+        Disconnect from Pika Gripper device
         """
         if not self.is_connected:
             return
         
-        # 断开串口连接
+        # Disconnect serial port
         self.serial_comm.disconnect()
         self.is_connected = False
-        logger.info(f"已断开Pika Gripper设备连接: {self.port}")
+        logger.info(f"Disconnected from Pika Gripper device: {self.port}")
         
-        # 断开相机连接
+        # Disconnect cameras
         if self._fisheye_camera:
             try:
                 self._fisheye_camera.disconnect()
@@ -125,14 +125,14 @@ class Gripper:
     
     def _data_callback(self, data):
         """
-        数据回调函数，处理接收到的JSON数据
+        Data callback function, processes received JSON data
         
-        参数:
-            data (dict): 接收到的JSON数据
+        Args:
+            data (dict): Received JSON data
         """
         try:
             with self.data_lock:
-                # 处理电机数据
+                # Process motor data
                 if 'motor' in data:
                     motor = data['motor']
                     self.motor_data = {
@@ -141,7 +141,7 @@ class Gripper:
                         'Position': motor.get('Position', 0.0)
                     }
                 
-                # 处理电机状态
+                # Process motor status
                 if 'motorstatus' in data:
                     status = data['motorstatus']
                     self.motor_status = {
@@ -152,22 +152,22 @@ class Gripper:
                         'BusCurrent': status.get('BusCurrent', 0)
                     }
                 
-                # 处理版本信息
+                # Process version information
                 if 'Version' in data:
-                    logger.info(f"设备版本信息: {data['Version']}")
+                    logger.info(f"Device version info: {data['Version']}")
                     
         except Exception as e:
-            logger.error(f"处理数据回调异常: {e}")
+            logger.error(f"Exception in data callback: {e}")
     
     def get_motor_data(self):
         """
-        获取电机完整数据
+        Get complete motor data
         
-        返回:
-            dict: 电机数据，包含Speed, Current, Position字段
+        Returns:
+            dict: Motor data, containing Speed, Current, Position fields
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机数据")
+            logger.warning("Device not connected, returning default motor data")
             return {'Speed': 0.0, 'Current': 0, 'Position': 0.0}
         
         with self.data_lock:
@@ -175,13 +175,13 @@ class Gripper:
     
     def get_motor_status(self):
         """
-        获取电机状态
+        Get motor status
         
-        返回:
-            dict: 电机状态，包含Voltage, DriverTemp, MotorTemp, Status, BusCurrent字段
+        Returns:
+            dict: Motor status, containing Voltage, DriverTemp, MotorTemp, Status, BusCurrent fields
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机状态")
+            logger.warning("Device not connected, returning default motor status")
             return {'Voltage': 0.0, 'DriverTemp': 0, 'MotorTemp': 0, 'Status': "0x00", 'BusCurrent': 0}
         
         with self.data_lock:
@@ -189,30 +189,30 @@ class Gripper:
 
     def get_motor_speed(self):
         """
-        获取电机当前转速 (rad/s)
+        Get motor current speed (rad/s)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机转速")
+            logger.warning("Device not connected, returning default motor speed")
             return self.motor_data.get('Speed', 0.0)
         with self.data_lock:
             return self.motor_data['Speed']
 
     def get_motor_current(self):
         """
-        获取电机当前相电流 (mA)
+        Get motor current phase current (mA)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机电流")
+            logger.warning("Device not connected, returning default motor current")
             return self.motor_data.get('Current', 0)
         with self.data_lock:
             return self.motor_data['Current']
 
     def get_motor_position(self):
         """
-        获取电机当前位置 (rad)
+        Get motor current position (rad)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机位置")
+            logger.warning("Device not connected, returning default motor position")
             return self.motor_data.get('Position', 0.0)
         with self.data_lock:
             return self.motor_data['Position']
@@ -222,14 +222,14 @@ class Gripper:
         height = 0.0325 * math.sin(angle)
         width_d = 0.0325 * math.cos(angle)
         width = math.sqrt(0.058**2 - (height - 0.01456)**2) + width_d
-        # 将单位由m转换为mm
+        # Convert units from m to mm
         return width*1000
     def get_gripper_distance(self):
         """
-        获取夹爪当前位置 (mm)
+        Get current gripper position (mm)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机位置")
+            logger.warning("Device not connected, returning default motor position")
         with self.data_lock:
             angle = self.motor_data['Position']
             distance = (self.get_distance(angle) - self.get_distance(0)) * 2   #default
@@ -238,190 +238,190 @@ class Gripper:
             
     def get_voltage(self):
         """
-        获取电机驱动器电压 (V)
+        Get motor driver voltage (V)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电压")
+            logger.warning("Device not connected, returning default voltage")
             return self.motor_status.get('Voltage', 0.0)
         with self.data_lock:
             return self.motor_status['Voltage']
 
     def get_driver_temp(self):
         """
-        获取电机驱动器温度 (°C)
+        Get motor driver temperature (°C)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认驱动器温度")
+            logger.warning("Device not connected, returning default driver temperature")
             return self.motor_status.get('DriverTemp', 0)
         with self.data_lock:
             return self.motor_status['DriverTemp']
 
     def get_motor_temp(self):
         """
-        获取电机温度 (°C)
+        Get motor temperature (°C)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认电机温度")
+            logger.warning("Device not connected, returning default motor temperature")
             return self.motor_status.get('MotorTemp', 0)
         with self.data_lock:
             return self.motor_status['MotorTemp']
     
     def get_status_raw(self):
         """
-        获取电机驱动器状态 (原始字符串)
+        Get motor driver status (raw string)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认状态")
+            logger.warning("Device not connected, returning default status")
             return self.motor_status.get('Status', "0x00")
         with self.data_lock:
             return self.motor_status['Status']
 
     def get_bus_current(self):
         """
-        获取母线电流 (mA)
+        Get bus current (mA)
         """
         if not self.is_connected:
-            logger.warning("设备未连接，返回默认母线电流")
+            logger.warning("Device not connected, returning default bus current")
             return self.motor_status.get('BusCurrent', 0)
         with self.data_lock:
             return self.motor_status['BusCurrent']
     
     def enable(self):
         """
-        启用电机
+        Enable motor
         
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法启用电机")
+            logger.error("Device not connected, unable to enable motor")
             return False
         
         return self.serial_comm.send_command(CommandType.ENABLE)
     
     def disable(self):
         """
-        禁用电机
+        Disable motor
         
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法禁用电机")
+            logger.error("Device not connected, unable to disable motor")
             return False
         
         return self.serial_comm.send_command(CommandType.DISABLE)
     
     def set_zero(self):
         """
-        设置零点
+        Set zero point
         
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法设置零点")
+            logger.error("Device not connected, unable to set zero point")
             return False
         
         return self.serial_comm.send_command(CommandType.SET_ZERO)
     
     # def set_motor_angle(self,rad):
     #     """
-    #     根据电流值设置电机转动弧度，目的为了输出恒定的控制力
-        
-    #     参数:
-    #         rad: 弧度
-        
-    #     返回:
-    #         bool: 操作是否成功
+    #     Set motor rotation angle based on current value, intended to output constant control force
+    #     
+    #     Args:
+    #         rad: Angle in radians
+    #     
+    #     Returns:
+    #         bool: Whether the operation succeeded
     #     """
     #     if not self.is_connected:
-    #         logger.error("设备未连接，无法设置电机弧度")
+    #         logger.error("Device not connected, unable to set motor angle")
     #         return False
-        
-    #     # 确保角度非负
+    #     
+    #     # Ensure angle is non-negative
     #     if rad < 0:
     #         rad = 0
-    #         logger.warning("电机弧度不能为负值，已设置为0")
-        
-    #     # 如果电流值在 -600 之上，就正常控制
+    #         logger.warning("Motor angle cannot be negative, set to 0")
+    #     
+    #     # If current value is above -600, control normally
     #     if self.motor_data['Current'] > -600:
     #         self.rad = rad
     #         self.serial_comm.send_command(CommandType.POSITION_CTRL, rad)
-        
-    #     # 如果瞬时电流超过 -2300，则缓慢张开夹爪
+    #     
+    #     # If instantaneous current exceeds -2300, slowly open the gripper
     #     elif self.motor_data['Current'] < -2300:
     #         self.rad += 0.05 
-    #         logger.warning("过流,当前电机弧度:", self.rad)
+    #         logger.warning("Overcurrent, current motor angle:", self.rad)
     #         self.serial_comm.send_command(CommandType.POSITION_CTRL, self.rad)
-        
-    #     # 如果电流值在 -10000 之下，就跳出 error
+    #     
+    #     # If current value is below -10000, raise error
     #     elif self.motor_data['Current'] < -10000:
-    #        logger.error("电机已过流，启动保护措施，请检查gripper电机状态，如亮红灯则需断电重启")
+    #        logger.error("Motor overcurrent, protection activated, please check gripper motor status; if red light is on, power cycle required")
 
-    #     # 夹爪正常张开
+    #     # Gripper opening normally
     #     else:
     #         if rad > self.rad:
     #             self.serial_comm.send_command(CommandType.POSITION_CTRL, rad)
         
     def set_motor_angle(self, rad):
         """
-        设置电机转动弧度
+        Set motor rotation angle
         
-        参数:
-            rad (float): 目标弧度，单位为弧度
+        Args:
+            rad (float): Target angle in radians
             
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法设置电机弧度")
+            logger.error("Device not connected, unable to set motor angle")
             return False
         
-        # 确保角度非负
+        # Ensure angle is non-negative
         if rad < 0:
             rad = 0
-            logger.warning("电机弧度不能为负值，已设置为0")
+            logger.warning("Motor angle cannot be negative, set to 0")
         
         return self.serial_comm.send_command(CommandType.POSITION_CTRL, rad)
     
     def set_motor_torque(self, current):
         """
-        设置电机电流大小，通过其调整电机力矩
+        Set motor current to adjust motor torque
         
-        参数:
-            current (float): 电流值，单位为A
-            范围： 0~2A
+        Args:
+            current (float): Current value in A
+            Range: 0~2A
             
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法设置电流大小")
+            logger.error("Device not connected, unable to set current")
             return False
         
-        # 确保角度非负
+        # Ensure current is non-negative
         if current < 0:
             current = 0
-            logger.warning("电机电流不能为负值，已设置为0")
+            logger.warning("Motor current cannot be negative, set to 0")
         
         return self.serial_comm.send_command(CommandType.CURRENT, current)
     
     def set_gripper_distance(self, target_gripper_distance_mm):
         """
-        设置夹爪开合距离 (mm)
+        Set gripper opening distance (mm)
         
-        参数:
-            target_gripper_distance_mm (float): 目标夹爪开合距离 (mm)
-            取值范围：0-90mm
-        返回:
-            bool: 操作是否成功
+        Args:
+            target_gripper_distance_mm (float): Target gripper opening distance (mm)
+            Range: 0-90mm
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.warning("设备未连接，无法设置夹爪距离")
+            logger.warning("Device not connected, unable to set gripper distance")
             return False
 
-        # 1. 根据目标夹爪行程距离反推出 get_distance(angle) 的目标值
+        # 1. Derive target get_distance(angle) value from target gripper travel distance
         # get_gripper_distance = (get_distance(angle) - get_distance(0)) * 2
         # target_gripper_distance_mm / 2 = get_distance(angle) - get_distance(0)
         # get_distance(angle) = target_gripper_distance_mm / 2 + get_distance(0)
@@ -430,27 +430,27 @@ class Gripper:
         get_distance_0 = self.get_distance(0) 
         target_width_mm = target_gripper_distance_mm / 2 + get_distance_0
 
-        # 2. 通过数值方法反向查找对应的电机角度
-        # 我们需要找到一个 'angle'，使得 self.get_distance(angle) 尽可能接近 target_width_mm
+        # 2. Find corresponding motor angle via numerical method
+        # We need to find an 'angle' such that self.get_distance(angle) is as close as possible to target_width_mm
         
-        # 定义搜索范围和精度
-        # 假设电机角度在 0 到 (180.0 - 43.99) / 180.0 * math.pi 弧度之间
+        # Define search range and precision
+        # Assume motor angle is between 0 and (180.0 - 43.99) / 180.0 * math.pi radians
         low_angle = 0.0
         high_angle = (180.0 - 43.99) / 180.0 * math.pi # Approximately 1.99 radians
         
-        # 增加一个检查，确保目标距离在夹爪的有效范围内
-        # 最小夹爪距离 (angle = low_angle)
+        # Add a check to ensure target distance is within valid gripper range
+        # Minimum gripper distance (angle = low_angle)
         min_gripper_distance_at_low_angle = (self.get_distance(low_angle) - get_distance_0) * 2
-        # 最大夹爪距离 (angle = high_angle)
+        # Maximum gripper distance (angle = high_angle)
         max_gripper_distance_at_high_angle = (self.get_distance(high_angle) - get_distance_0) * 2
 
         # Ensure target_gripper_distance_mm is within the valid range
         if not (min_gripper_distance_at_low_angle <= target_gripper_distance_mm <= max_gripper_distance_at_high_angle):
-            logger.error(f"目标夹爪距离 {target_gripper_distance_mm:.2f} mm 超出有效范围 [{min_gripper_distance_at_low_angle:.2f}, {max_gripper_distance_at_high_angle:.2f}] mm")
+            logger.error(f"Target gripper distance {target_gripper_distance_mm:.2f} mm out of valid range [{min_gripper_distance_at_low_angle:.2f}, {max_gripper_distance_at_high_angle:.2f}] mm")
             return False
 
-        tolerance = 0.01 # 夹爪距离的容差 (mm)
-        angle_tolerance = 0.00001 # 角度的容差 (rad)
+        tolerance = 0.01 # Gripper distance tolerance (mm)
+        angle_tolerance = 0.00001 # Angle tolerance (rad)
         max_iterations = 1000
 
         found_angle = None
@@ -477,51 +477,51 @@ class Gripper:
 
         if found_angle is not None:
             self.set_motor_angle(found_angle)
-            logger.info(f"夹爪已设置为目标距离 {target_gripper_distance_mm} mm，对应电机角度 {found_angle:.4f} rad")
+            logger.info(f"Gripper set to target distance {target_gripper_distance_mm} mm, corresponding motor angle {found_angle:.4f} rad")
             return True
         else:
-            logger.error(f"未能找到目标夹爪距离 {target_gripper_distance_mm} mm 对应的电机角度")
+            logger.error(f"Failed to find motor angle for target gripper distance {target_gripper_distance_mm} mm")
             return False
     def set_velocity(self, velocity):
         """
-        设置电机速度
+        Set motor velocity
         
-        参数:
-            velocity (float): 目标速度
+        Args:
+            velocity (float): Target velocity
             
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法设置速度")
+            logger.error("Device not connected, unable to set velocity")
             return False
         
         return self.serial_comm.send_command(CommandType.VELOCITY_CTRL, velocity)
     
     def set_effort(self, effort):
         """
-        设置电机力矩
+        Set motor effort
         
-        参数:
-            effort (float): 目标力矩
+        Args:
+            effort (float): Target effort
             
-        返回:
-            bool: 操作是否成功
+        Returns:
+            bool: Whether the operation succeeded
         """
         if not self.is_connected:
-            logger.error("设备未连接，无法设置力矩")
+            logger.error("Device not connected, unable to set effort")
             return False
         
         return self.serial_comm.send_command(CommandType.EFFORT_CTRL, effort)
     
     def set_camera_param(self,camera_width,camera_height,camera_fps,fisheye_thread_fps=100):
         '''
-        设置相机分辨率和帧率
+        Set camera resolution and frame rate
         
-        参数:
-            camera_width (int): 相机宽度
-            camera_height (int): 相机高度
-            camera_fps (int): 相机帧率
+        Args:
+            camera_width (int): Camera width
+            camera_height (int): Camera height
+            camera_fps (int): Camera frame rate
         '''
         self.camera_width = camera_width
         self.camera_height = camera_height
@@ -530,80 +530,80 @@ class Gripper:
         
     def set_fisheye_camera_index(self,index):
         '''
-        设置鱼眼相机的索引
+        Set fisheye camera index
         
-        参数:
-            index (int): 鱼眼相机索引
+        Args:
+            index (int): Fisheye camera index
         '''
         self.fisheye_camera_index = index
         
     def set_realsense_serial_number(self,serial_number):
         '''
-        设置realsense相机序列号
+        Set RealSense camera serial number
         
-        参数:
-            serial_number (str): realsense相机序列号
+        Args:
+            serial_number (str): RealSense camera serial number
         '''
         self.realsense_serial_number = serial_number
         
     def get_fisheye_camera(self):
         """
-        获取鱼眼相机对象
+        Get fisheye camera object
         
-        返回:
-            FisheyeCamera: 鱼眼相机对象
+        Returns:
+            FisheyeCamera: Fisheye camera object
         """
         if not self.is_connected:
-            logger.warning("设备未连接，无法获取鱼眼相机")
+            logger.warning("Device not connected, unable to get fisheye camera")
             return None
         
-        # 延迟导入，避免循环导入
+        # Lazy import to avoid circular imports
         if self._fisheye_camera is None:
             try:
                 from .camera.fisheye import FisheyeCamera
                 self._fisheye_camera = FisheyeCamera(self.camera_width,self.camera_height,self.camera_fps,self.fisheye_camera_index,self.fisheye_thread_fps)
                 self._fisheye_camera.connect()
             except Exception as e:
-                logger.error(f"初始化鱼眼相机失败: {e}")
+                logger.error(f"Failed to initialize fisheye camera: {e}")
                 return None
         
         return self._fisheye_camera
     
     def get_realsense_camera(self):
         """
-        获取RealSense相机对象
+        Get RealSense camera object
         
-        返回:
-            RealSenseCamera: RealSense相机对象
+        Returns:
+            RealSenseCamera: RealSense camera object
         """
         if not self.is_connected:
-            logger.warning("设备未连接，无法获取RealSense相机")
+            logger.warning("Device not connected, unable to get RealSense camera")
             return None
         
-        # 延迟导入，避免循环导入
+        # Lazy import to avoid circular imports
         if self._realsense_camera is None:
             try:
                 from .camera.realsense import RealSenseCamera
                 self._realsense_camera = RealSenseCamera(self.camera_width,self.camera_height,self.camera_fps,self.realsense_serial_number)
                 self._realsense_camera.connect()
             except Exception as e:
-                logger.error(f"初始化RealSense相机失败: {e}")
+                logger.error(f"Failed to initialize RealSense camera: {e}")
                 return None
         
         return self._realsense_camera
     
     def get_version(self):
         """
-        获取Gripper的版本信息
+        Get Gripper version information
         
-        返回:
-            tuple: 包含版本信息的元组
+        Returns:
+            tuple: Tuple containing version information
         """
         return self.serial_comm.get_device_info_command()
     
     def __del__(self):
         """
-        析构函数，确保资源被正确释放
+        Destructor to ensure resources are released
         """
         self.disconnect()
 

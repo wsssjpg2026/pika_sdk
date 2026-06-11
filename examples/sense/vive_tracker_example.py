@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Vive Tracker模块 - 专门获取WM0设备的位姿数据
+Vive Tracker module - retrieve pose data for the WM0 device.
 """
 
 import sys
@@ -10,109 +10,109 @@ import time
 import os
 import logging
 
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('test_vive_tracker')
 
-# 添加SDK路径
+# Add SDK path
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
     from pika.sense import Sense
     
     def test_vive_tracker_wm0():
-        """测试获取WM0设备的位姿数据"""
-        logger.info("开始获取WM0设备的位姿数据...")
+        """Test retrieving pose data for the WM0 device."""
+        logger.info("Starting to retrieve WM0 device pose data...")
         
-        # 初始化Sense对象
+        # Initialize Sense object
         sense = Sense()
         
-        # 连接设备
-        logger.info("连接Sense设备...")
+        # Connect device
+        logger.info("Connecting to Sense device...")
         if not sense.connect():
-            logger.error("连接Sense设备失败")
+            logger.error("Failed to connect to Sense device.")
             return False
         
-        # 配置Vive Tracker（可选）
+        # Configure Vive Tracker (optional)
         # sense.set_vive_tracker_config(config_path="path/to/config", lh_config="lighthouse_config")
         
         try:
-            # 获取Vive Tracker对象
-            logger.info("获取Vive Tracker对象...")
+            # Get Vive Tracker object
+            logger.info("Getting Vive Tracker object...")
             tracker = sense.get_vive_tracker()
             
             if not tracker:
-                logger.error("获取Vive Tracker对象失败，请确保已安装pysurvive库")
+                logger.error("Failed to get Vive Tracker object. Please ensure pysurvive is installed.")
                 return False
             
-            # 等待设备初始化
-            logger.info("等待设备初始化完成...")
-            time.sleep(2.0)  # 等待2秒钟
+            # Wait for device initialization
+            logger.info("Waiting for device initialization...")
+            time.sleep(2.0)  # Wait 2 seconds
             
-            # 获取所有追踪设备
-            logger.info("获取追踪设备列表...")
+            # Get all tracking devices
+            logger.info("Getting tracking device list...")
             devices = sense.get_tracker_devices()
-            logger.info(f"检测到的设备: {devices}")
+            logger.info(f"Detected devices: {devices}")
             
-            # 检查是否存在WM0设备，如果没有则重试
+            # Check for WM0 device; retry if not found
             target_device = "WM0"
             retry_count = 0
             max_retries = 10
             
             while target_device not in devices and retry_count < max_retries:
-                logger.info(f"未检测到{target_device}设备，等待并重试 ({retry_count+1}/{max_retries})...")
+                logger.info(f"{target_device} not detected, waiting and retrying ({retry_count+1}/{max_retries})...")
                 time.sleep(1.0)
                 devices = sense.get_tracker_devices()
-                logger.info(f"检测到的设备: {devices}")
+                logger.info(f"Detected devices: {devices}")
                 retry_count += 1
             
             if target_device not in devices:
-                logger.warning(f"经过多次尝试，仍未检测到{target_device}设备")
-                logger.info("请确保设备已连接并被正确识别")
+                logger.warning(f"{target_device} not detected after multiple attempts.")
+                logger.info("Please ensure the device is connected and recognized correctly.")
                 return False
             
-            logger.info(f"成功检测到{target_device}设备！")
+            logger.info(f"Successfully detected {target_device} device!")
             
-            # 循环获取WM0设备的位姿数据
-            logger.info(f"开始获取{target_device}设备的位姿数据...")
-            for i in range(20):  # 获取20次数据
-                # 获取WM0设备的位姿数据
+            # Loop to retrieve WM0 pose data
+            logger.info(f"Starting to retrieve pose data for {target_device}...")
+            for i in range(20):  # Retrieve data 20 times
+                # Get WM0 pose data
                 pose = sense.get_pose(target_device)
                 
                 if pose:
-                    logger.info(f"数据 #{i+1}: {target_device} - 位置: {pose.position}, 旋转: {pose.rotation}")
+                    logger.info(f"Data #{i+1}: {target_device} - Position: {pose.position}, Rotation: {pose.rotation}")
                     
-                    # 提取位置和旋转数据用于进一步处理
+                    # Extract position and rotation for further processing
                     position = pose.position  # [x, y, z]
-                    rotation = pose.rotation  # [x, y, z， w] 四元数
+                    rotation = pose.rotation  # [x, y, z, w] quaternion
                     
-                    # 示例：计算位置的平方和（用于距离计算）
+                    # Example: compute sum of squared position (for distance calculation)
                     distance_squared = sum([p*p for p in position])
-                    logger.info(f"距离原点的平方: {distance_squared:.6f}")
+                    logger.info(f"Distance squared from origin: {distance_squared:.6f}")
                     
-                    # 示例：提取旋转四元数的各个分量
+                    # Example: extract individual quaternion components
                     x, y, z, w = rotation
-                    logger.info(f"四元数分量: x={x:.6f}, y={y:.6f}, z={z:.6f}, w={w:.6f}")
+                    logger.info(f"Quaternion components: x={x:.6f}, y={y:.6f}, z={z:.6f}, w={w:.6f}")
                     
                 else:
-                    logger.warning(f"未能获取{target_device}的位姿数据，等待下一次尝试...")
+                    logger.warning(f"Failed to get pose data for {target_device}, waiting for next attempt...")
                 
-                time.sleep(0.2)  # 每0.2秒获取一次
+                time.sleep(0.2)  # Retrieve every 0.2 seconds
             
-            logger.info(f"{target_device}设备位姿数据获取完成")
+            logger.info(f"Pose data retrieval for {target_device} complete.")
             return True
             
         except Exception as e:
-            logger.error(f"获取过程中发生错误: {e}")
+            logger.error(f"Error during retrieval: {e}")
             return False
         finally:
-            # 断开连接
-            logger.info("断开Sense设备连接...")
+            # Disconnect
+            logger.info("Disconnecting Sense device...")
             sense.disconnect()
     
     if __name__ == "__main__":
         test_vive_tracker_wm0()
         
 except ImportError as e:
-    logger.error(f"导入错误: {e}")
-    logger.error("请确保已安装所有必要的依赖，包括pysurvive库")
+    logger.error(f"Import error: {e}")
+    logger.error("Please ensure all required dependencies are installed, including pysurvive.")

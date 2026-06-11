@@ -1,5 +1,9 @@
 # Pika SDK API 文档
 
+<p align="center">
+  <a href="API_Doc.md"> English </a> | <a>中文</a>
+</p>
+
 ## 目录
 
 1. [模块概述](#模块概述)

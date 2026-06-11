@@ -1,25 +1,36 @@
-# Pika SDK
+<div align="center">
+  <h1 align="center"> Pika SDK </h1>
+  <h3 align="center"> Agilex Robotics </h3>
+  <p align="center">
+    <a> English </a> | <a href="README_zh-CN.md">中文</a> 
+  </p>
+</div>
+<div align="center">
 
-## 介绍
+![ubuntu](https://img.shields.io/badge/Ubuntu-20.04-orange.svg)
+![ubuntu](https://img.shields.io/badge/Ubuntu-22.04-orange.svg)
+![python](https://img.shields.io/badge/Python-%3C%3D%203.9-blue.svg)
 
-Pika SDK 是一款专为 Pika 系列设备设计的 Python 软件开发工具包，旨在提供简单易用且功能强大的编程接口。该 SDK 支持两种主要设备类型：Pika Sense 和 Pika Gripper，使开发者能够轻松地控制和访问这些设备的各项功能。
+## Introduction
 
-如果您在使用 Pika SDK 过程中遇到任何问题，或者有任何建议和反馈，请通过以下方式联系我们：
+Pika SDK is a Python software development kit designed for Pika series devices, providing simple yet powerful programming interfaces. The SDK supports two main device types: Pika Sense and Pika Gripper, enabling developers to easily control and access the full functionality of these devices.
+
+If you encounter any issues while using Pika SDK, or have suggestions and feedback, please contact us through the following channels:
 
 - GitHub Issues: https://github.com/agilexrobotics/pika_sdk/issues
-- 电子邮件: support@agilex.ai
+- Email: support@agilex.ai
 
-我们的技术团队将尽快回复您的问题，并提供必要的支持和帮助。
+Our technical team will respond to your questions as soon as possible and provide the necessary support.
 
-## 软件环境
+## Software Environment
 
-- 架构：x86_64/arm64
-- 操作系统：Ubuntu 20.04/22.04
-- python 版本： ≤ 3.9
+- Architecture: x86_64/arm64
+- Operating System: Ubuntu 20.04/22.04
+- Python version: ≤ 3.9
 
-它应该可以在其他 Linux 环境中工作，但只有上面列出的环境会定期进行测试。
+It should work in other Linux environments, but only the environments listed above are tested regularly.
 
-## 安装依赖项
+## Install Dependencies
 
 ```bash 
 sudo apt update
@@ -27,26 +38,27 @@ sudo apt update
 sudo apt install cmake g++ git v4l-utils  libudev-dev pkg-config libgtk-3-dev build-essential zlib1g-dev libx11-dev libeigen3-dev freeglut3-dev liblapacke-dev libopenblas-dev libpcap-dev libatlas-base-dev libusb-1.0-0-dev pkg-config libglfw3-dev libssl-dev libglu1-mesa-dev python3-pip
 ```
 
-## 安装 realsense sdk
-如果系统中已安装了 realsense sdk，则跳过此步骤：
+## Install RealSense SDK
 
-如何判断是否已经安装 realsense sdk：
+If RealSense SDK is already installed on your system, skip this step.
+
+To check whether RealSense SDK is already installed:
 
 ```bash
 realsense-viewer
 ```
 
-如果有显示realsense  viewer，则表示已经安装，请跳过此步骤。
+If the RealSense Viewer opens, the SDK is already installed—skip this step.
 
-1、下载安装包
+1. Download the package
 
 ```bash
 git clone https://github.com/IntelRealSense/librealsense
-# 或者下载指定版本
-git clone https://github.com/IntelRealSense/librealsense/releases/tag/vxxx   # 注意：请将 vxxx 替换为实际版本号
+# Or download a specific version
+git clone https://github.com/IntelRealSense/librealsense/releases/tag/vxxx   # Note: replace vxxx with the actual version number
 ```
 
-2、编译安装
+2. Build and install
 
 ```bash
 cd librealsense
@@ -57,7 +69,7 @@ make -j$(nproc)
 sudo make install
 ```
 
-## 安装 libsurvive
+## Install libsurvive
 
 ```bash
 git clone https://github.com/cntools/libsurvive.git
@@ -67,136 +79,130 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 make
 ```
 
-## 安装 SDK
+## Install SDK
 
-### pip3 安装
+### pip3 Installation
 
 ```bash
 pip3 install agx-pypika
 ```
 
-1、安装过程中 `Building wheel for wxpython (setup.py) ...`  在编译 `wxPython` 这步需要耗时很长，请耐心等待。
+1. During installation, the step `Building wheel for wxpython (setup.py) ...` (compiling `wxPython`) can take a long time—please be patient.
 
-2、从源码编译 `wxpython` 可能需要半小时甚至更久，且极易报错，最好的办法是寻找已经编译好的版本。
+2. Building `wxpython` from source may take half an hour or longer and is prone to errors. The best approach is to use a pre-built version:
 
 ```bash
 pip3 install -U -f https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-22.04 wxpython
 ```
 
-*(请将 `ubuntu-22.04` 替换为你对应的系统版本)*
+*(Replace `ubuntu-22.04` with your system version)*
 
+### Install from Source
 
-
-
-
-### 源码安装
-
-首先，您需要获取 SDK 源代码。您可以通过克隆 GitHub 仓库或直接下载压缩包的方式获取代码。如果您选择使用 Git，可以在终端中执行以下命令：
+First, obtain the SDK source code. You can clone the GitHub repository or download a compressed archive. If you use Git, run the following commands in your terminal:
 
 ```bash
 git clone https://github.com/agilexrobotics/pika_sdk.git
 cd pika_sdk
 ```
 
-接下来，安装 SDK 所需的基本依赖库。这些库是 SDK 正常运行的必要组件：
+Next, install the basic dependencies required by the SDK. These libraries are essential for the SDK to run properly:
 
 ```bash
 pip3 install -r requirements.txt  
 ```
 
-如果下载速度慢的话，可以使用清华源进行安装
+If downloads are slow, you can use the Tsinghua mirror:
 
 ```bash
 pip3 install -r requirements.txt  -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple 
 ```
 
-最后，通过以下命令安装 SDK 本身。使用 `-e` 参数可以以开发模式安装，这样您对源代码的修改会立即生效，无需重新安装：
+Finally, install the SDK itself with the following command. The `-e` flag installs in editable/development mode, so changes to the source code take effect immediately without reinstalling:
 
 ```bash
 pip3 install -e .
 ```
 
-### 测试
+### Testing
 
-安装完成后，您可以运行 SDK 自带的测试脚本，验证安装是否成功：
+After installation, you can run the SDK's built-in test script to verify that everything is set up correctly:
 
 ```bash
 python3 test_sdk.py
 ```
 
-如果测试脚本输出成功信息，说明 SDK 已正确安装，您可以开始使用它来开发应用了。
+If the test script outputs success messages, the SDK is installed correctly and you can start developing applications with it.
 
-## 多设备自动检测与绑定
+## Multi-Device Auto-Detection and Binding
 
-Pika SDK 提供了多设备自动检测与绑定工具，可以帮助您在有多个 Pika 设备连接到系统时，自动检测并绑定设备。详细使用说明请参考 `tools/多设备自动检测与绑定工具使用说明.md` 文件。
+Pika SDK provides a multi-device auto-detection and binding tool to help you automatically detect and bind devices when multiple Pika devices are connected to the system. For detailed instructions, see [`tools/multi_device_auto_detection_and_binding_guide.md`](tools/multi_device_auto_detection_and_binding_guide.md).
 
-开始运行代码之前，请先进行设备的检测与绑定，如没做好绑定，则会出现设备打开失败的错误。
+Before running your code, perform device detection and binding first. If devices are not properly bound, you may encounter device open failures.
 
-运行设备检测绑定工具：
+Run the device detection and binding tool:
 
 ```bash
 cd pika_sdk
 python3 tools/multi_device_detector.py
 ```
 
-## 示例代码
+## Example Code
 
-SDK 提供了多个示例代码，位于 `examples` 目录下，包括：
-- gripper：
-  - `gripper_example.py`: 演示如何使用 Pika Gripper 设备的基本功能
-  - `quickly_ctrl_gripper.py`: 演示如何控制夹爪
-  - `quickly_open_camera.py`: 演示如何快速打开相机并保存图像
-  - `quickly_set_zero_point.py`: 演示如何设置gripper零点(在夹爪行程不对时进行校准)
+The SDK includes several examples in the `examples` directory, including:
 
-- sense：
-  - `sense_example.py`: 演示如何使用 Pika Sense 设备的基本功能
-  - `quickly_open_camera.py`: 演示如何快速打开相机并保存图像
-  - `vive_tracker_example.py`: 获取pika sense的位姿信息
+- gripper:
+  - `gripper_example.py`: Demonstrates basic usage of the Pika Gripper device
+  - `quickly_ctrl_gripper.py`: Demonstrates how to control the gripper
+  - `quickly_open_camera.py`: Demonstrates how to quickly open the camera and save images
+  - `quickly_set_zero_point.py`: Demonstrates how to set the gripper zero point (calibrate when the gripper travel range is incorrect)
 
-这些示例代码展示了 SDK 的基本用法和常见功能，可以作为您开发自己应用的参考。
+- sense:
+  - `sense_example.py`: Demonstrates basic usage of the Pika Sense device
+  - `quickly_open_camera.py`: Demonstrates how to quickly open the camera and save images
+  - `vive_tracker_example.py`: Retrieves pose information from Pika Sense
 
-## API 参考
+These examples show basic SDK usage and common features, and can serve as a reference for developing your own applications.
 
-详细使用说明请参考 `pika_sdk/Pika SDK API 文档.md` 文件。
+## API Reference
 
-## 错误处理
+For detailed usage instructions, see [`API_Doc.md`](API_Doc.md).
 
-Pika SDK 使用 Python 的日志系统记录错误和警告信息，便于开发者进行调试和问题排查。默认情况下，日志级别设置为 INFO，记录基本的操作信息和错误。如果您需要更详细的日志信息，可以将日志级别设置为 DEBUG：
+## Error Handling
+
+Pika SDK uses Python's logging system to record errors and warnings, making debugging and troubleshooting easier for developers. By default, the log level is set to INFO, recording basic operation information and errors. If you need more detailed logs, set the log level to DEBUG:
 
 ```python
 import logging
-logging.getLogger('pika').setLevel(logging.DEBUG)  # 设置为 DEBUG 级别以获取更详细的日志
+logging.getLogger('pika').setLevel(logging.DEBUG)  # Set to DEBUG level for more detailed logs
 ```
 
-SDK 中的大多数方法都会在发生错误时返回特定的错误码或 False 值，并在日志中记录详细的错误信息。建议在开发过程中密切关注日志输出，及时发现和解决问题。
+Most methods in the SDK return specific error codes or False values on failure, and log detailed error information. During development, pay close attention to log output to identify and resolve issues promptly.
 
-对于常见的错误情况，如设备未连接、相机初始化失败等，SDK 会提供清晰的错误提示，并尽可能地进行优雅的错误处理，避免程序崩溃。
+For common errors such as device not connected or camera initialization failure, the SDK provides clear error messages and handles errors gracefully whenever possible to avoid program crashes.
 
-## 注意事项
+## Notes
 
-在使用 Pika SDK 开发应用时，请注意以下几点：
+When developing applications with Pika SDK, please keep the following in mind:
 
-1. 设备连接：使用前请确保 Pika 设备已正确连接到计算机，并且串口设备路径（如 '/dev/ttyUSB0'）正确。如果不确定设备路径，可以在 Linux 系统中使用 `ls /dev/ttyUSB*` 命令查看。
+1. **Device connection**: Before use, ensure the Pika device is properly connected to your computer and the serial port path (e.g., `/dev/ttyUSB0`) is correct. If you are unsure of the device path, run `ls /dev/ttyUSB*` on Linux to list available devices.
 
-2. 资源释放：使用完毕后，务必调用 `disconnect()` 方法断开连接，释放资源。这对于相机等硬件资源尤为重要，否则可能导致资源泄漏或设备被锁定。
+2. **Resource cleanup**: After use, always call the `disconnect()` method to release resources. This is especially important for hardware resources such as cameras; otherwise, resource leaks or device lock-ups may occur.
 
-3. RealSense 相机：使用 RealSense 相机功能需要安装 pyrealsense2 库。如果您不需要深度相机功能，可以不安装此库，SDK 会自动降级只使用鱼眼相机。
+3. **RealSense camera**: Using RealSense camera features requires the pyrealsense2 library. If you do not need depth camera functionality, you can skip installing this library—the SDK will automatically fall back to using only the fisheye camera.
 
-4. Vive Tracker：使用 Vive Tracker 功能需要安装 pysurvive 库。确保已正确安装并配置 SteamVR 和基站设备。
+4. **Vive Tracker**: Using Vive Tracker features requires the pysurvive library. Ensure SteamVR and base stations are properly installed and configured.
 
-5. 权限问题：如果遇到串口访问权限问题，可能需要将用户添加到 dialout 组：`sudo usermod -a -G dialout $USER`，添加后需要重新登录系统使权限生效。
+5. **Permissions**: If you encounter serial port access permission issues, add your user to the dialout group: `sudo usermod -a -G dialout $USER`. You must log out and back in for the permission change to take effect.
 
-6. 相机设备 ID：鱼眼相机的设备 ID 可能因系统配置和连接顺序而异。如果默认 ID 无法正确访问相机，请使用 `set_fisheye_camera_index()` 方法设置正确的设备 ID。
+6. **Camera device ID**: Fisheye camera device IDs may vary depending on system configuration and connection order. If the default ID cannot access the camera, use the `set_fisheye_camera_index()` method to set the correct device ID.
 
-7. RealSense 序列号：RealSense 相机可以通过序列号进行唯一标识。如果系统连接了多个 RealSense 相机，请使用 `set_realsense_serial_number()` 方法指定要使用的相机。
+7. **RealSense serial number**: RealSense cameras can be uniquely identified by serial number. If multiple RealSense cameras are connected, use the `set_realsense_serial_number()` method to specify which camera to use.
 
-8. 多线程安全：SDK 内部使用了线程锁保证数据访问的线程安全性，但在多线程应用中，仍需注意避免并发访问可能导致的问题。
+8. **Thread safety**: The SDK uses internal thread locks to ensure thread-safe data access, but in multi-threaded applications, still be mindful of potential issues from concurrent access.
 
-9. 错误处理：在生产环境中，建议对所有可能失败的操作进行错误检查和异常处理，确保应用的稳定性和可靠性。
+9. **Error handling**: In production environments, check for errors and handle exceptions for all operations that may fail, to ensure application stability and reliability.
 
-10. 性能考虑：处理图像和深度数据可能需要较高的计算资源，特别是在高分辨率和高帧率下。请根据您的应用需求和硬件条件，合理设置相机参数。
+10. **Performance**: Processing image and depth data can require significant compute resources, especially at high resolution and frame rates. Set camera parameters appropriately based on your application requirements and hardware capabilities.
 
-通过遵循以上注意事项，您可以更加顺利地使用 Pika SDK 开发各类应用，充分发挥 Pika 设备的功能和性能。
-
-
-
+By following these guidelines, you can use Pika SDK more smoothly to develop applications and fully leverage the capabilities of Pika devices.

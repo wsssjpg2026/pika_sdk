@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Vive Tracker模块 - 获取设备的位姿数据并用Pygame实时可视化
-此示例是为了用户更好的观察设备定位是否有漂移
+Vive Tracker module - retrieve device pose data and visualize in real time with Pygame.
+This example helps observe whether device localization is drifting.
 """
 
 import sys
@@ -14,11 +14,11 @@ import numpy as np
 import pygame
 import math
 
-# 配置日志
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('vive_tracker_visualization')
 
-# --- Pygame 可视化类 ---
+# --- Pygame visualizer ---
 class PygameVisualizer:
     def __init__(self, width=800, height=600):
         try:
@@ -29,32 +29,32 @@ class PygameVisualizer:
             self.font = pygame.font.Font(None, 36)
             self.running = True
         except Exception as e:
-            logger.error(f"Pygame初始化失败: {e}")
+            logger.error(f"Failed to initialize Pygame: {e}")
             self.running = False
             
-        # 1. 新增缩放/相机参数
-        self.camera_distance = 5.0  # 离z=0平面的距离
-        self.scale_factor = 2000.0   # 投影缩放因子，用于缩放视图
-        self.zoom_step = 100.0       # 每次缩放的调整量
+        # Zoom/camera parameters
+        self.camera_distance = 5.0  # Distance from z=0 plane
+        self.scale_factor = 2000.0   # Projection scale factor for view zoom
+        self.zoom_step = 100.0       # Zoom adjustment per step
         
     def project_3d_to_2d(self, point_3d):
-        """将3D点投影到2D屏幕"""
+        """Project a 3D point onto the 2D screen."""
         x, y, z = point_3d
         
-        # 避免除以零或负值
+        # Avoid division by zero or negative values
         depth = z + self.camera_distance
         if depth <= 0.1:
             depth = 0.1 
 
-        # 使用缩放因子控制视图大小
+        # Use scale factor to control view size
         factor = self.scale_factor / depth 
         x_2d = 400 + x * factor
         y_2d = 300 - y * factor 
         return (int(x_2d), int(y_2d))
     
     def quaternion_to_rotation_matrix(self, quaternion):
-        """将 [x, y, z, w] 四元数转换为 3x3 旋转矩阵"""
-        q1, q2, q3, q0 = quaternion # 对应 (x, y, z, w)
+        """Convert [x, y, z, w] quaternion to a 3x3 rotation matrix."""
+        q1, q2, q3, q0 = quaternion  # corresponds to (x, y, z, w)
         
         R = np.array([
             [1-2*(q2**2+q3**2), 2*(q1*q2-q0*q3), 2*(q1*q3+q0*q2)],
@@ -65,95 +65,97 @@ class PygameVisualizer:
 
     def draw_coordinate_frame(self, position, quaternion, color, length, name=""):
         """
-        绘制一个坐标系
-        :param position: 坐标系原点 [x, y, z]
-        :param quaternion: 坐标系姿态 [x, y, z, w]
-        :param color: 轴颜色 (R, G, B)
-        :param length: 轴的长度
-        :param name: 坐标系名称，用于显示
+        Draw a coordinate frame.
+
+        Args:
+            position: Frame origin [x, y, z].
+            quaternion: Frame orientation [x, y, z, w].
+            color: Axis color (R, G, B).
+            length: Axis length.
+            name: Frame name for display.
         """
-        # 四元数转旋转矩阵
+        # Quaternion to rotation matrix
         R = self.quaternion_to_rotation_matrix(quaternion)
         
-        # 坐标系轴
+        # Coordinate frame axes
         pos_np = np.array(position)
         x_end = pos_np + R[:, 0] * length
         y_end = pos_np + R[:, 1] * length
         z_end = pos_np + R[:, 2] * length
         
-        # 投影到2D
+        # Project to 2D
         pos_2d = self.project_3d_to_2d(pos_np)
         x_end_2d = self.project_3d_to_2d(x_end)
         y_end_2d = self.project_3d_to_2d(y_end)
         z_end_2d = self.project_3d_to_2d(z_end)
         
-        # 绘制轴线 (使用传入的颜色)
-        pygame.draw.line(self.screen, (255, 0, 0), pos_2d, x_end_2d, 3)  # X轴-红
-        pygame.draw.line(self.screen, (0, 255, 0), pos_2d, y_end_2d, 3)  # Y轴-绿
-        pygame.draw.line(self.screen, (0, 0, 255), pos_2d, z_end_2d, 3)  # Z轴-蓝
+        # Draw axes
+        pygame.draw.line(self.screen, (255, 0, 0), pos_2d, x_end_2d, 3)  # X axis - red
+        pygame.draw.line(self.screen, (0, 255, 0), pos_2d, y_end_2d, 3)  # Y axis - green
+        pygame.draw.line(self.screen, (0, 0, 255), pos_2d, z_end_2d, 3)  # Z axis - blue
 
-        # 绘制原点
+        # Draw origin
         pygame.draw.circle(self.screen, color, pos_2d, 5)
         
-        # 显示坐标系名称
+        # Display frame name
         if name:
             text_surface = self.font.render(name, True, color)
             self.screen.blit(text_surface, (pos_2d[0] + 10, pos_2d[1] - 10))
 
     def handle_input(self):
-        """处理用户输入，包括退出和缩放"""
+        """Handle user input including quit and zoom."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
                 return 
             
             if event.type == pygame.KEYDOWN:
-                # 放大 (W键 或 Up Arrow)
+                # Zoom in (W key or Up Arrow)
                 if event.key == pygame.K_w or event.key == pygame.K_UP:
                     self.scale_factor += self.zoom_step
-                    logger.info(f"缩放: 放大到 {self.scale_factor:.2f}")
-                # 缩小 (S键 或 Down Arrow)
+                    logger.info(f"Zoom: zoomed in to {self.scale_factor:.2f}")
+                # Zoom out (S key or Down Arrow)
                 if event.key == pygame.K_s or event.key == pygame.K_DOWN:
                     if self.scale_factor > self.zoom_step:
                         self.scale_factor -= self.zoom_step
-                        logger.info(f"缩放: 缩小到 {self.scale_factor:.2f}")
+                        logger.info(f"Zoom: zoomed out to {self.scale_factor:.2f}")
 
     def update(self, tracker_position, tracker_rotation):
-        """更新显示，绘制 Base Link 和 Tracker 坐标系"""
+        """Update display, drawing Base Link and Tracker coordinate frames."""
         self.handle_input()
         if not self.running:
             return 
 
-        self.screen.fill((0, 0, 0)) # 黑色背景
+        self.screen.fill((0, 0, 0))  # Black background
         
-        # --- 1. 绘制 Base Link 坐标系 (零点) ---
-        # 零点位置，无旋转
+        # --- 1. Draw Base Link coordinate frame (origin) ---
+        # Origin position, no rotation
         base_pos = [0.0, 0.0, 0.0]
         base_quat = [0.0, 0.0, 0.0, 1.0] 
         self.draw_coordinate_frame(
             position=base_pos, 
             quaternion=base_quat, 
-            color=(100, 100, 255), # 浅蓝
-            length=0.7, # 轴长度 0.7m
+            color=(100, 100, 255),  # Light blue
+            length=0.7,  # Axis length 0.7 m
             name="base_Link"
         )
         
-        # --- 2. 绘制 Tracker 坐标系 (相对 Base Link) ---
-        # tracker_position 和 tracker_rotation 本身就是相对于 Base Link (世界坐标系) 的位姿
+        # --- 2. Draw Tracker coordinate frame (relative to Base Link) ---
+        # tracker_position and tracker_rotation are pose relative to Base Link (world frame)
         self.draw_coordinate_frame(
             position=tracker_position, 
             quaternion=tracker_rotation, 
-            color=(255, 255, 0), # 黄色
-            length=0.5, # 轴长度 0.5m
+            color=(255, 255, 0),  # Yellow
+            length=0.5,  # Axis length 0.5 m
             name="tracker_link"
         )
         
-        # 绘制 Base Link 到 Tracker 的连线 (更清晰地表示相对位置)
+        # Draw line from Base Link to Tracker (shows relative position)
         pos_2d_base = self.project_3d_to_2d(base_pos)
         pos_2d_tracker = self.project_3d_to_2d(tracker_position)
         pygame.draw.line(self.screen, (150, 150, 150), pos_2d_base, pos_2d_tracker, 1)
 
-        # 显示位姿信息
+        # Display pose information
         info_text = f"Position: ({tracker_position[0]:.4f}, {tracker_position[1]:.4f}, {tracker_position[2]:.4f}) (m)"
         quat_text = f"Rotation (x, y, z, w): ({tracker_rotation[0]:.4f}, {tracker_rotation[1]:.4f}, {tracker_rotation[2]:.4f}, {tracker_rotation[3]:.4f})"
         zoom_text = f"Zoom/Scale: {self.scale_factor/200.0:.2f}x (W/S or Up/Down)"
@@ -168,77 +170,80 @@ class PygameVisualizer:
         self.screen.blit(zoom_surface, (10, 70))
         
         pygame.display.flip()
-        self.clock.tick(60) # 保持60FPS
+        self.clock.tick(60)  # Maintain 60 FPS
         
     def is_running(self):
         return self.running
 
-# --- Vive Tracker 逻辑 ---
+# --- Vive Tracker logic ---
 try:
     from pika.sense import Sense
     
     def run_visualization():
-        """测试获取WM0设备的位姿数据并可视化"""
+        """Test retrieving WM0 pose data and visualize it."""
         viz = PygameVisualizer()
         if not viz.is_running():
-            logger.error("Pygame可视化环境未准备好，退出。")
+            logger.error("Pygame visualization environment not ready, exiting.")
             return False
 
         sense = Sense()
-        logger.info("连接Sense设备...")
+        logger.info("Connecting to Sense device...")
         if not sense.connect():
-            logger.error("连接Sense设备失败")
+            logger.error("Failed to connect to Sense device.")
             pygame.quit() 
             return False
         
         try:
             tracker = sense.get_vive_tracker()
             if not tracker:
-                logger.error("获取Vive Tracker对象失败，请确保已安装pysurvive库")
+                logger.error("Failed to get Vive Tracker object. Please ensure pysurvive is installed.")
                 pygame.quit()
                 return False
             
-            logger.info("等待设备初始化完成...")
+            logger.info("Waiting for device initialization...")
             time.sleep(2.0)
             
             target_device = "WM0"
             max_retries = 10
             retry_count = 0
-            # 设备连接检查逻辑... 
+            # Device connection check logic
             for retry_count in range(max_retries):
                 devices = sense.get_tracker_devices()
                 if target_device in devices:
-                    logger.info(f"成功检测到{target_device}设备！")
+                    logger.info(f"Successfully detected {target_device} device!")
                     break
                 else:
-                    logger.info(f"未检测到{target_device}设备，等待并重试 ({retry_count+1}/{max_retries})...")
+                    logger.info(f"{target_device} not detected, waiting and retrying ({retry_count+1}/{max_retries})...")
                 time.sleep(1.0)
             else:
-                logger.warning(f"经过多次尝试，仍未检测到{target_device}设备")
+                logger.warning(f"{target_device} not detected after multiple attempts.")
                 pygame.quit()
                 return False
             
-            logger.info(f"开始获取{target_device}设备的位姿数据并更新可视化 (W/S或↑/↓键控制缩放，按X关闭窗口结束)...")
+            logger.info(
+                f"Starting pose retrieval and visualization for {target_device} "
+                f"(W/S or Up/Down to zoom, close window to exit)..."
+            )
             
-            # 循环获取数据并更新可视化
+            # Loop to retrieve data and update visualization
             while viz.is_running(): 
                 pose = sense.get_pose(target_device)
                 
                 if pose:
                     position = pose.position  # [x, y, z]
-                    rotation = pose.rotation  # [x, y, z， w] 四元数
+                    rotation = pose.rotation  # [x, y, z, w] quaternion
                     viz.update(position, rotation)
                 else:
-                    logger.warning(f"未能获取{target_device}的位姿数据...")
-                    # 至少调用一次 update 来处理用户输入事件
+                    logger.warning(f"Failed to get pose data for {target_device}...")
+                    # Call update at least once to handle user input events
                     viz.update([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
                 
                 time.sleep(0.01)
             
         except Exception as e:
-            logger.error(f"获取过程中发生错误: {e}")
+            logger.error(f"Error during retrieval: {e}")
         finally:
-            logger.info("断开Sense设备连接...")
+            logger.info("Disconnecting Sense device...")
             sense.disconnect()
             pygame.quit()
     
@@ -246,5 +251,5 @@ try:
         run_visualization()
         
 except ImportError as e:
-    logger.error(f"导入错误: {e}")
-    logger.error("请确保已安装所有必要的依赖：pysurvive 库、pika.sense 库 和 pygame 库")
+    logger.error(f"Import error: {e}")
+    logger.error("Please ensure all required dependencies are installed: pysurvive, pika.sense, and pygame.")

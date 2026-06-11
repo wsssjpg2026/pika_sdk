@@ -2,30 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Sense 示例代码
-演示如何查询 pika Sense 固件版本信息
+Pika Sense example.
+Demonstrates how to query Pika Sense firmware version information.
 """
 
 import time
 from pika import sense
 
 def main():
-    # 创建 Sense 对象并连接
-    print("正在连接 Pika Sense 设备...")
-    my_sense = sense('/dev/ttyUSB0')  # 请根据实际情况修改串口路径,默认参数为：/dev/ttyUSB0
+    # Create Sense object and connect
+    print("Connecting to Pika Sense device...")
+    my_sense = sense('/dev/ttyUSB0')  # Update serial port path as needed; default: /dev/ttyUSB0
     
     if not my_sense.connect():
-        print("连接 Pika Sense 设备失败，请检查设备连接和串口路径")
+        print("Failed to connect to Pika Sense. Please check device connection and serial port path.")
         return
     
-    print("成功连接到 Pika Sense 设备")
-    print("获取版本信息...")
-    # 每0.1秒发送一次get_version()命令,循环5次
+    print("Successfully connected to Pika Sense device.")
+    print("Fetching version information...")
+    # Send get_version() every 0.1 seconds, 5 times
     for _ in range(5):
         my_sense.get_version()
-        # 休眠0.1秒等待数据返回
+        # Sleep 0.1 seconds waiting for response
         time.sleep(0.1)
-
 
 
 if __name__ == "__main__":

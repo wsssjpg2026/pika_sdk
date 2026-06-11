@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Pika Tracker 模块，提供对各种位姿追踪设备的访问接口
+Pika Tracker module, provides access to various pose tracking devices
 """
 
 from .vive_tracker import ViveTracker, PoseData 
