@@ -302,7 +302,8 @@ class Sense:
                 self._vive_tracker = ViveTracker(
                     config_path=self._vive_tracker_config,
                     lh_config=self._vive_tracker_lh,
-                    args=self._vive_tracker_args
+                    args=self._vive_tracker_args,
+                    product='sense'
                 )
                 self._vive_tracker.connect()
             except Exception as e:

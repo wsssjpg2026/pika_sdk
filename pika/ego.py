@@ -54,6 +54,12 @@ class Ego:
         self._fisheye_camera = None
         self._realsense_camera = None
 
+        # Vive Tracker object, lazy initialization
+        self._vive_tracker = None
+        self._vive_tracker_config = None
+        self._vive_tracker_lh = None
+        self._vive_tracker_args = None
+
     def connect(self):
         """
         Connect to Pika Ego device
@@ -101,6 +107,13 @@ class Ego:
         if self._realsense_camera:
             try:
                 self._realsense_camera.disconnect()
+            except:
+                pass
+
+        # Disconnect Vive Tracker
+        if self._vive_tracker:
+            try:
+                self._vive_tracker.disconnect()
             except:
                 pass
 
@@ -311,6 +324,75 @@ class Ego:
                 return None
 
         return self._realsense_camera
+
+    def set_vive_tracker_config(self, config_path=None, lh_config=None, args=None):
+        """
+        Set Vive Tracker configuration
+
+        Args:
+            config_path (str, optional): Configuration file path
+            lh_config (str, optional): Lighthouse configuration
+            args (list, optional): Additional pysurvive arguments
+        """
+        self._vive_tracker_config = config_path
+        self._vive_tracker_lh = lh_config
+        self._vive_tracker_args = args
+
+    def get_vive_tracker(self):
+        """
+        Get Vive Tracker object
+
+        Returns:
+            ViveTracker: Vive Tracker object
+        """
+        # Lazy import to avoid circular imports
+        if self._vive_tracker is None:
+            try:
+                from .tracker.vive_tracker import ViveTracker
+                self._vive_tracker = ViveTracker(
+                    config_path=self._vive_tracker_config,
+                    lh_config=self._vive_tracker_lh,
+                    args=self._vive_tracker_args,
+                    product='ego'
+                )
+                self._vive_tracker.connect()
+            except Exception as e:
+                logger.error(f"Failed to initialize Vive Tracker: {e}")
+                return None
+
+        return self._vive_tracker
+
+    def get_pose(self, device_name=None):
+        """
+        Get Vive Tracker pose data
+
+        Args:
+            device_name (str, optional): Device name; if None, returns pose data for all devices
+
+        Returns:
+            PoseData or dict: If device_name is specified, returns that device's PoseData object;
+                          otherwise returns a dict of all device poses {device_name: PoseData}
+        """
+        tracker = self.get_vive_tracker()
+        if tracker:
+            return tracker.get_pose(device_name)
+        else:
+            logger.warning("Vive Tracker not initialized, unable to get pose data")
+            return None if device_name else {}
+
+    def get_tracker_devices(self):
+        """
+        Get list of all detected Vive Tracker devices
+
+        Returns:
+            list: Device name list
+        """
+        tracker = self.get_vive_tracker()
+        if tracker:
+            return tracker.get_devices()
+        else:
+            logger.warning("Vive Tracker not initialized, unable to get device list")
+            return []
 
     def get_version(self):
         """

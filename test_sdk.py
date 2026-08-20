@@ -116,6 +116,7 @@ def test_ego_class():
             'get_imu_data', 'get_accelerometer', 'get_gyroscope',
             'get_magnetometer', 'get_quaternion',
             'get_fisheye_camera', 'get_realsense_camera',
+            'get_vive_tracker',
             'set_camera_param', 'set_fisheye_camera_index', 'set_realsense_serial_number'
         ]
         for method in methods:

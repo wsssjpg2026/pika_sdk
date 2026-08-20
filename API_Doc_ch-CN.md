@@ -27,7 +27,7 @@ Pika SDK 由以下主要模块组成：
 
 ### pika.ego
 
-`pika.ego` 模块提供了对 Pika Ego 设备的访问接口，支持IMU数据读取和相机访问。该模块的核心是 `Ego` 类，用于与 Pika Ego 设备进行通信。
+`pika.ego` 模块提供了对 Pika Ego 设备的访问接口，支持 IMU 数据读取、相机访问和 Vive Tracker 位姿追踪。该模块的核心是 `Ego` 类，用于与 Pika Ego 设备进行通信。
 
 ### pika.gripper
 
@@ -300,7 +300,7 @@ my_sense.set_vive_tracker_config(config_path="/path/to/config", lh_config="light
 
 #### get_vive_tracker()
 
-获取 Vive Tracker 对象。
+获取 Vive Tracker 对象。该 tracker 会应用 Sense 位姿变换（旋转加上平移到夹爪中心）。
 
 ```python
 vive_tracker = my_sense.get_vive_tracker()
@@ -422,7 +422,7 @@ my_sense.get_version()
 
 ## Ego 类
 
-`Ego` 类是 Pika Ego 设备的主要接口，提供对 IMU 传感器和相机的访问。
+`Ego` 类是 Pika Ego 设备的主要接口，提供对 IMU 传感器、相机和 Vive Tracker 的访问。
 
 ### 导入方式
 
@@ -684,6 +684,93 @@ if realsense_camera:
     if success:
         # 处理彩色图像
         pass
+```
+
+#### set_vive_tracker_config(config_path, lh_config, args)
+
+设置 Vive Tracker 配置参数。
+
+```python
+my_ego.set_vive_tracker_config(config_path, lh_config, args)
+```
+
+**参数**:
+- `config_path` (str, optional): 配置文件路径
+- `lh_config` (str, optional): 灯塔配置
+- `args` (list, optional): 其他 pysurvive 参数
+
+**返回值**:
+- 无
+
+**示例**:
+```python
+# 设置 Vive Tracker 配置
+my_ego.set_vive_tracker_config(config_path="/path/to/config", lh_config="lighthouse_config")
+```
+
+#### get_vive_tracker()
+
+获取 Vive Tracker 对象。该 tracker 会应用 Ego 位姿变换（仅平移：+X 33.27 mm，-Z 39 mm，无旋转）。
+
+```python
+vive_tracker = my_ego.get_vive_tracker()
+```
+
+**返回值**:
+- `ViveTracker`: Vive Tracker 对象，如果初始化失败则返回 None
+
+**示例**:
+```python
+vive_tracker = my_ego.get_vive_tracker()
+if vive_tracker:
+    # 获取设备列表
+    devices = vive_tracker.get_devices()
+    print(f"检测到的设备: {devices}")
+```
+
+#### get_pose(device_name)
+
+获取指定设备的位姿数据。Ego 位姿仅做平移（+X 33.27 mm，-Z 39 mm）。
+
+```python
+pose = my_ego.get_pose(device_name)
+```
+
+**参数**:
+- `device_name` (str, optional): 设备名称；如果为 None，则返回所有设备的位姿数据
+
+**返回值**:
+- `PoseData` 或 `dict`: 如果指定了 device_name，返回该设备的 PoseData 对象；否则返回所有设备位姿的字典 {device_name: PoseData}
+
+**示例**:
+```python
+# 获取特定设备的位姿
+pose = my_ego.get_pose("WM0")
+if pose:
+    print(f"位置: {pose.position}")
+    print(f"旋转: {pose.rotation}")
+
+# 获取所有设备的位姿
+all_poses = my_ego.get_pose()
+for device_name, pose in all_poses.items():
+    print(f"设备 {device_name} - 位置: {pose.position}, 旋转: {pose.rotation}")
+```
+
+#### get_tracker_devices()
+
+获取所有已检测到的 Vive Tracker 设备列表。
+
+```python
+devices = my_ego.get_tracker_devices()
+```
+
+**返回值**:
+- `list`: 设备名称列表
+
+**示例**:
+```python
+devices = my_ego.get_tracker_devices()
+print(f"检测到的设备: {devices}")
 ```
 
 #### get_version()
@@ -1758,7 +1845,7 @@ print(f"最新数据: {data}")
 
 ### 导入方式
 
-通常不需要直接导入，而是通过 `Sense` 类的 `get_vive_tracker()` 方法获取。
+通常不需要直接导入，而是通过 `Sense` 或 `Ego` 类的 `get_vive_tracker()` 方法获取。
 
 ```python
 # 如果需要直接导入
@@ -1768,7 +1855,7 @@ from pika.tracker.vive_tracker import ViveTracker
 ### 初始化
 
 ```python
-tracker = ViveTracker(config_path=None, lh_config=None, args=None)
+tracker = ViveTracker(config_path=None, lh_config=None, args=None, product='sense')
 ```
 
 #### 参数
@@ -1776,6 +1863,7 @@ tracker = ViveTracker(config_path=None, lh_config=None, args=None)
 - `config_path` (str, optional): 配置文件路径
 - `lh_config` (str, optional): 灯塔配置
 - `args` (list, optional): 其他 pysurvive 参数
+- `product` (str, optional): 要应用的位姿变换。`'sense'`（默认）先旋转再平移到夹爪中心。`'ego'` 仅平移（+X 33.27 mm，-Z 39 mm）。
 
 ### 方法
 
@@ -1848,7 +1936,9 @@ for device_name, pose in all_poses.items():
 
 ![img](img/mmexport1746516732555.png)
 
-坐标系位于夹爪中
+实际应用的变换取决于 `product`：
+- `'sense'`：旋转加上平移到夹爪中心
+- `'ego'`：仅平移（+X 33.27 mm，-Z 39 mm），无旋转
 
 #### get_devices()
 
@@ -1987,16 +2077,20 @@ sudo usermod -a -G dialout $USER
 pip install pysurvive
 ```
 
-然后通过 Sense 类的 get_vive_tracker() 方法获取 ViveTracker 对象：
+然后通过 Sense 或 Ego 类的 `get_vive_tracker()` 方法获取 ViveTracker 对象。Sense 应用旋转加夹爪中心平移；Ego 仅应用平移（+X 33.27 mm，-Z 39 mm）：
 
 ```python
-from pika import sense
+from pika import sense, ego
 
+# Sense + tracker → Sense 夹爪中心变换
 my_sense = sense()
 my_sense.connect()
-
-# 获取 Vive Tracker 对象
 tracker = my_sense.get_vive_tracker()
+
+# Ego + tracker → 仅 Ego 平移
+my_ego = ego()
+my_ego.connect()
+tracker = my_ego.get_vive_tracker()
 
 # 获取设备列表
 devices = tracker.get_devices()

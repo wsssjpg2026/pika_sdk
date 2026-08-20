@@ -27,7 +27,7 @@ The `pika.sense` module provides access to Pika Sense devices, supporting encode
 
 ### pika.ego
 
-The `pika.ego` module provides access to Pika Ego devices, supporting IMU data reading and camera access. The core of this module is the `Ego` class, used for communicating with Pika Ego devices.
+The `pika.ego` module provides access to Pika Ego devices, supporting IMU data reading, camera access, and Vive Tracker pose tracking. The core of this module is the `Ego` class, used for communicating with Pika Ego devices.
 
 ### pika.gripper
 
@@ -300,7 +300,7 @@ my_sense.set_vive_tracker_config(config_path="/path/to/config", lh_config="light
 
 #### get_vive_tracker()
 
-Get the Vive Tracker object.
+Get the Vive Tracker object. The tracker applies the Sense pose transform (rotation plus translation to the gripper center).
 
 ```python
 vive_tracker = my_sense.get_vive_tracker()
@@ -422,7 +422,7 @@ my_sense.get_version()
 
 ## Ego Class
 
-The `Ego` class is the main interface for Pika Ego devices, providing access to IMU sensors and cameras.
+The `Ego` class is the main interface for Pika Ego devices, providing access to IMU sensors, cameras, and Vive Tracker.
 
 ### Import
 
@@ -684,6 +684,93 @@ if realsense_camera:
     if success:
         # Process color image
         pass
+```
+
+#### set_vive_tracker_config(config_path, lh_config, args)
+
+Set Vive Tracker configuration parameters.
+
+```python
+my_ego.set_vive_tracker_config(config_path, lh_config, args)
+```
+
+**Parameters**:
+- `config_path` (str, optional): Configuration file path
+- `lh_config` (str, optional): Lighthouse configuration
+- `args` (list, optional): Additional pysurvive parameters
+
+**Returns**:
+- None
+
+**Example**:
+```python
+# Set Vive Tracker configuration
+my_ego.set_vive_tracker_config(config_path="/path/to/config", lh_config="lighthouse_config")
+```
+
+#### get_vive_tracker()
+
+Get the Vive Tracker object. The tracker applies the Ego pose transform (translation only: +X 33.27 mm, -Z 39 mm; no rotation).
+
+```python
+vive_tracker = my_ego.get_vive_tracker()
+```
+
+**Returns**:
+- `ViveTracker`: Vive Tracker object; returns None if initialization fails
+
+**Example**:
+```python
+vive_tracker = my_ego.get_vive_tracker()
+if vive_tracker:
+    # Get device list
+    devices = vive_tracker.get_devices()
+    print(f"Detected devices: {devices}")
+```
+
+#### get_pose(device_name)
+
+Get pose data for the specified device. Ego poses use translation only (+X 33.27 mm, -Z 39 mm).
+
+```python
+pose = my_ego.get_pose(device_name)
+```
+
+**Parameters**:
+- `device_name` (str, optional): Device name; if None, returns pose data for all devices
+
+**Returns**:
+- `PoseData` or `dict`: If device_name is specified, returns the PoseData object for that device; otherwise returns a dictionary of all device poses {device_name: PoseData}
+
+**Example**:
+```python
+# Get pose for a specific device
+pose = my_ego.get_pose("WM0")
+if pose:
+    print(f"Position: {pose.position}")
+    print(f"Rotation: {pose.rotation}")
+
+# Get poses for all devices
+all_poses = my_ego.get_pose()
+for device_name, pose in all_poses.items():
+    print(f"Device {device_name} - Position: {pose.position}, Rotation: {pose.rotation}")
+```
+
+#### get_tracker_devices()
+
+Get a list of all detected Vive Tracker devices.
+
+```python
+devices = my_ego.get_tracker_devices()
+```
+
+**Returns**:
+- `list`: List of device names
+
+**Example**:
+```python
+devices = my_ego.get_tracker_devices()
+print(f"Detected devices: {devices}")
 ```
 
 #### get_version()
@@ -1758,7 +1845,7 @@ The `ViveTracker` class provides access to Vive Tracker device pose data.
 
 ### Import
 
-Direct import is typically not required; obtain the object via the `get_vive_tracker()` method on the `Sense` class.
+Direct import is typically not required; obtain the object via the `get_vive_tracker()` method on the `Sense` or `Ego` class.
 
 ```python
 # If direct import is needed
@@ -1768,7 +1855,7 @@ from pika.tracker.vive_tracker import ViveTracker
 ### Initialization
 
 ```python
-tracker = ViveTracker(config_path=None, lh_config=None, args=None)
+tracker = ViveTracker(config_path=None, lh_config=None, args=None, product='sense')
 ```
 
 #### Parameters
@@ -1776,6 +1863,7 @@ tracker = ViveTracker(config_path=None, lh_config=None, args=None)
 - `config_path` (str, optional): Configuration file path
 - `lh_config` (str, optional): Lighthouse configuration
 - `args` (list, optional): Additional pysurvive parameters
+- `product` (str, optional): Pose transform to apply. `'sense'` (default) applies rotation then translation to the gripper center. `'ego'` applies translation only (+X 33.27 mm, -Z 39 mm).
 
 ### Methods
 
@@ -1848,7 +1936,9 @@ The coordinate diagram for tracker pose data is shown below:
 
 ![img](img/mmexport1746516732555.png)
 
-The coordinate system is located at the gripper center.
+The applied transform depends on `product`:
+- `'sense'`: rotation plus translation to the gripper center
+- `'ego'`: translation only (+X 33.27 mm, -Z 39 mm); no rotation
 
 #### get_devices()
 
@@ -1987,16 +2077,20 @@ Using the Vive Tracker feature requires installing the pysurvive library:
 pip install pysurvive
 ```
 
-Then obtain the ViveTracker object via the `get_vive_tracker()` method on the Sense class:
+Then obtain the ViveTracker object via the `get_vive_tracker()` method on the Sense or Ego class. Sense applies rotation plus gripper-center translation; Ego applies translation only (+X 33.27 mm, -Z 39 mm):
 
 ```python
-from pika import sense
+from pika import sense, ego
 
+# Sense + tracker → Sense gripper-center transform
 my_sense = sense()
 my_sense.connect()
-
-# Get Vive Tracker object
 tracker = my_sense.get_vive_tracker()
+
+# Ego + tracker → Ego translation only
+my_ego = ego()
+my_ego.connect()
+tracker = my_ego.get_vive_tracker()
 
 # Get device list
 devices = tracker.get_devices()

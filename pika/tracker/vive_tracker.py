@@ -20,6 +20,20 @@ from .pose_utils import xyzQuaternion2matrix, xyzrpy2Mat, matrixToXYZQuaternion
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('pika.vive_tracker')
 
+# Product-specific pose transforms applied after the raw tracker pose.
+# Sense: rotate then translate to gripper center.
+# Ego: translation only (+X 33.27 mm, -Z 39 mm).
+PRODUCT_TRANSFORMS = {
+    'sense': {
+        'apply_rotation': True,
+        'translation': (0.172, 0.0, -0.076),
+    },
+    'ego': {
+        'apply_rotation': False,
+        'translation': (0.03327, 0.0, -0.039),
+    },
+}
+
 # Import pysurvive library
 try:
     import pysurvive
@@ -47,12 +61,29 @@ class ViveTracker:
         config_path (str, optional): Configuration file path
         lh_config (str, optional): Lighthouse configuration
         args (list, optional): Additional pysurvive arguments
+        product (str, optional): Product transform to apply, 'sense' or 'ego'. Default 'sense'
     """
     
-    def __init__(self, config_path=None, lh_config=None, args=None):
+    def __init__(self, config_path=None, lh_config=None, args=None, product='sense'):
         self.config_path = config_path
         self.lh_config = lh_config
         self.args = args if args else []
+        
+        if product not in PRODUCT_TRANSFORMS:
+            raise ValueError(
+                f"Unsupported product '{product}', expected one of: {list(PRODUCT_TRANSFORMS.keys())}"
+            )
+        self.product = product
+        self._product_transform = PRODUCT_TRANSFORMS[product]
+        tx, ty, tz = self._product_transform['translation']
+        self._transform_matrix = xyzrpy2Mat(tx, ty, tz, 0, 0, 0)
+        self._rotate_matrix = None
+        if self._product_transform['apply_rotation']:
+            # Initial rotation correction: rotate -20 degrees around X axis (roll)
+            initial_rotation = xyzrpy2Mat(0, 0, 0, -(20.0 / 180.0 * math.pi), 0, 0)
+            # Alignment rotation: -90 degrees around X axis, -90 degrees around Y axis
+            alignment_rotation = xyzrpy2Mat(0, 0, 0, -90 / 180 * math.pi, -90 / 180 * math.pi, 0)
+            self._rotate_matrix = np.dot(initial_rotation, alignment_rotation)
         
         # Initialize state variables
         self.running = False
@@ -102,6 +133,7 @@ class ViveTracker:
                 return False
             
             logger.info("pysurvive initialized successfully")
+            logger.info(f"Using '{self.product}' pose transform")
             
             # Mark as running
             self.running = True
@@ -242,16 +274,13 @@ class ViveTracker:
                                 pose_data.Rot[1], pose_data.Rot[2], pose_data.Rot[3], pose_data.Rot[0]
                             )
                 
-                # Initial rotation correction: rotate -20 degrees around X axis (roll)
-                initial_rotation = xyzrpy2Mat(0, 0, 0, -(20.0 / 180.0 * math.pi), 0, 0)
-                # Alignment rotation: -90 degrees around X axis, -90 degrees around Y axis
-                alignment_rotation = xyzrpy2Mat(0, 0, 0, -90/180*math.pi, -90/180*math.pi, 0)
-                # Combine rotation matrices
-                rotate_matrix = np.dot(initial_rotation,alignment_rotation)
-                # Apply translation transform - transform collected pose data to gripper center
-                transform_matrix = xyzrpy2Mat(0.172, 0, -0.076, 0, 0, 0)
-                # Compute final transformation matrix
-                result_mat = np.matmul(np.matmul(origin_mat, rotate_matrix), transform_matrix)
+                # Apply product-specific pose transform:
+                # Sense: rotation then translation to gripper center
+                # Ego: translation only
+                if self._rotate_matrix is not None:
+                    result_mat = np.matmul(np.matmul(origin_mat, self._rotate_matrix), self._transform_matrix)
+                else:
+                    result_mat = np.matmul(origin_mat, self._transform_matrix)
                 # Extract position and quaternion from result matrix
                 x, y, z, qx, qy, qz, qw = matrixToXYZQuaternion(result_mat)
                 

@@ -166,6 +166,10 @@ SDK 提供了多个示例代码，位于 `examples` 目录下，包括：
   - `quickly_open_camera.py`: 演示如何快速打开相机并保存图像
   - `vive_tracker_example.py`: 获取pika sense的位姿信息
 
+- ego：
+  - `ego_examples.py`: 演示如何使用 Pika Ego 设备的基本功能
+  - `vive_tracker_example.py`: 获取 pika ego 的位姿信息
+
 这些示例代码展示了 SDK 的基本用法和常见功能，可以作为您开发自己应用的参考。
 
 ## API 参考

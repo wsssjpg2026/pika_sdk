@@ -164,6 +164,10 @@ The SDK includes several examples in the `examples` directory, including:
   - `quickly_open_camera.py`: Demonstrates how to quickly open the camera and save images
   - `vive_tracker_example.py`: Retrieves pose information from Pika Sense
 
+- ego:
+  - `ego_examples.py`: Demonstrates basic usage of the Pika Ego device
+  - `vive_tracker_example.py`: Retrieves pose information from Pika Ego
+
 These examples show basic SDK usage and common features, and can serve as a reference for developing your own applications.
 
 ## API Reference
