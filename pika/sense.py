@@ -392,6 +392,8 @@ class Sense:
             "bridge_error": "Vive Tracker is unavailable",
             "context_epoch": 0,
             "global_scene_generation": 0,
+            "global_scene_count": 0,
+            "cached_map_lighthouses": (),
             "lighthouses": {},
             "discovered_lighthouses": (),
         }

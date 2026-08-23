@@ -109,12 +109,14 @@ class _LibsurviveOpticalHealthMonitor:
         self._install_sync = None
         self._install_sweep = None
         self._install_lighthouse_pose = None
+        self._install_log = None
         self._get_lighthouse_bsd = None
         self._close_simple_context = None
         self._native = None
         self._error_reason = None
         self._had_recent_raw_optical_events = None
         self._had_recent_optical_events = None
+        self._cached_map_lighthouses = ()
         try:
             from . import _optical_health_native as native
             from pysurvive import pysurvive_generated as generated
@@ -130,6 +132,7 @@ class _LibsurviveOpticalHealthMonitor:
             self._install_lighthouse_pose = lib.get(
                 "survive_install_lighthouse_pose_fn", "cdecl"
             )
+            self._install_log = lib.get("survive_install_log_fn", "cdecl")
             get_lighthouse_bsd = lib.get("survive_simple_get_bsd", "cdecl")
             get_lighthouse_bsd.argtypes = [
                 generated.POINTER(generated.SurviveSimpleObject)
@@ -161,6 +164,7 @@ class _LibsurviveOpticalHealthMonitor:
             and self._install_sync is not None
             and self._install_sweep is not None
             and self._install_lighthouse_pose is not None
+            and self._install_log is not None
             and self._get_lighthouse_bsd is not None
             and self._close_simple_context is not None
             and self._native is not None
@@ -176,6 +180,7 @@ class _LibsurviveOpticalHealthMonitor:
             full_context = self._get_context(simple_context.ptr)
             if not full_context:
                 return False
+            cached_scene = self._existing_lighthouse_scene(simple_context)
             import ctypes
 
             context_address = ctypes.cast(full_context, ctypes.c_void_p).value
@@ -191,21 +196,27 @@ class _LibsurviveOpticalHealthMonitor:
             lighthouse_pose_installer_address = ctypes.cast(
                 self._install_lighthouse_pose, ctypes.c_void_p
             ).value
+            log_installer_address = ctypes.cast(
+                self._install_log, ctypes.c_void_p
+            ).value
             self._native.install(
                 context_address,
                 lightcap_installer_address,
                 installer_address,
                 sweep_installer_address,
                 lighthouse_pose_installer_address,
+                log_installer_address,
             )
-            seeded_lighthouses = self._seed_existing_lighthouse_scene(
-                simple_context
+            self._seed_existing_lighthouse_scene(cached_scene)
+            cached_lighthouses = tuple(
+                sorted(entry[0] for entry in cached_scene)
             )
+            self._cached_map_lighthouses = cached_lighthouses
             self._installed = True
             logger.info(
                 "native libsurvive optical + global-scene monitor installed; "
-                "seeded cached map=%s",
-                seeded_lighthouses or "none",
+                "cached map at install=%s",
+                cached_lighthouses or "none",
             )
             return True
         except Exception as exc:
@@ -213,15 +224,16 @@ class _LibsurviveOpticalHealthMonitor:
             logger.error("Failed to install libsurvive optical monitor: %s", exc)
             return False
 
-    def _seed_existing_lighthouse_scene(self, simple_context):
-        """Import valid map entries loaded before native hooks were installed.
+    def _existing_lighthouse_scene(self, simple_context):
+        """Snapshot authoritative cached map entries before installing hooks.
 
         ``SimpleContext`` loads persisted Lighthouse poses during construction,
         before this monitor can register its callback.  Only ``PositionSet``
-        entries are authoritative.  The native bridge fills an empty slot only,
-        so a callback that races with this snapshot always wins.
+        entries are authoritative.  Taking this snapshot before hook
+        installation keeps a subsequent live callback from being mislabeled
+        as the source of the cached map.
         """
-        seeded = []
+        entries = []
         for simple_object in simple_context.Objects():
             name = str(simple_object.Name())
             if not name.startswith("LH") or not name[2:].isdigit():
@@ -232,11 +244,19 @@ class _LibsurviveOpticalHealthMonitor:
             pose = bsd_pointer.contents.Pose
             position = tuple(float(value) for value in pose.Pos)
             rotation = tuple(float(value) for value in pose.Rot)
-            if self._native.seed_lighthouse_pose(
-                int(name[2:]), position, rotation
-            ):
-                seeded.append(name)
-        return tuple(sorted(seeded))
+            entries.append((name, int(name[2:]), position, rotation))
+        return tuple(entries)
+
+    def _seed_existing_lighthouse_scene(self, entries):
+        """Copy a pre-install cached snapshot into empty native map slots.
+
+        A live callback can win after the snapshot and before this copy.  The
+        native bridge intentionally preserves that newer callback value; the
+        entry remains classified as cached because its authoritative
+        ``PositionSet`` state was observed before hooks were installed.
+        """
+        for _name, index, position, rotation in entries:
+            self._native.seed_lighthouse_pose(index, position, rotation)
 
     @property
     def error_reason(self):
@@ -274,6 +294,7 @@ class _LibsurviveOpticalHealthMonitor:
                 self._installed = False
                 self._had_recent_raw_optical_events = None
                 self._had_recent_optical_events = None
+                self._cached_map_lighthouses = ()
 
     def snapshot(self, _device_name):
         if not self._installed:
@@ -349,6 +370,8 @@ class _LibsurviveOpticalHealthMonitor:
                 or "native libsurvive monitor is not installed",
                 "context_epoch": 0,
                 "global_scene_generation": 0,
+                "global_scene_count": 0,
+                "cached_map_lighthouses": (),
                 "lighthouses": {},
             }
         snapshot = self._native.scene_snapshot()
@@ -357,6 +380,12 @@ class _LibsurviveOpticalHealthMonitor:
                 "outdated pika optical native extension; reinstall agx-pypika "
                 "to rebuild _optical_health_native"
             )
+        if "global_scene_count" not in snapshot:
+            raise RuntimeError(
+                "outdated pika optical native extension; reinstall agx-pypika "
+                "to expose global_scene_count"
+            )
+        snapshot["cached_map_lighthouses"] = self._cached_map_lighthouses
         snapshot["bridge_available"] = True
         snapshot["bridge_error"] = None
         return snapshot

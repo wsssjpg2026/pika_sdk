@@ -2,6 +2,7 @@
 #include <Python.h>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -37,6 +38,9 @@ typedef void (*lighthouse_pose_process_func)(SurviveContext *, uint8_t,
                                              const SurvivePose *);
 typedef lighthouse_pose_process_func (*install_lighthouse_pose_func)(
     SurviveContext *, lighthouse_pose_process_func);
+typedef void (*log_process_func)(SurviveContext *, int, const char *);
+typedef log_process_func (*install_log_func)(SurviveContext *,
+                                             log_process_func);
 
 #define EVENT_CAPACITY 2048u
 #define CHANNEL_CAPACITY 16u
@@ -61,12 +65,24 @@ static lightcap_process_func prior_lightcap_process;
 static sync_process_func prior_sync_process;
 static sweep_process_func prior_sweep_process;
 static lighthouse_pose_process_func prior_lighthouse_pose_process;
+static log_process_func prior_log_process;
 static SurviveContext *installed_context;
 static LighthouseSceneEvent lighthouse_scene[LIGHTHOUSE_CAPACITY];
 static _Atomic uint64_t context_epoch_sequence;
 static _Atomic uint64_t installed_context_epoch;
 static _Atomic uint64_t global_scene_generation;
+static _Atomic uint64_t global_scene_count;
+static _Atomic uint64_t pending_global_scene_count;
 static atomic_flag lighthouse_scene_write_lock = ATOMIC_FLAG_INIT;
+
+static void store_max(_Atomic uint64_t *target, uint64_t observed) {
+    uint64_t current = atomic_load_explicit(target, memory_order_relaxed);
+    while (observed > current &&
+           !atomic_compare_exchange_weak_explicit(
+               target, &current, observed, memory_order_release,
+               memory_order_relaxed)) {
+    }
+}
 
 static uint64_t monotonic_ns(void) {
     struct timespec ts;
@@ -188,9 +204,33 @@ static void optical_health_lighthouse_pose(SurviveContext *context,
                                            uint8_t lighthouse_index,
                                            const SurvivePose *pose) {
     record_lighthouse_pose(lighthouse_index, pose, false);
+    /* The INFO line is emitted while an optimization result is being built;
+     * publish its scene count only when libsurvive starts delivering the
+     * corresponding Lighthouse poses. */
+    store_max(
+        &global_scene_count,
+        atomic_load_explicit(&pending_global_scene_count,
+                             memory_order_acquire));
     lighthouse_pose_process_func prior = prior_lighthouse_pose_process;
     if (prior != NULL) {
         prior(context, lighthouse_index, pose);
+    }
+}
+
+static void optical_health_log(SurviveContext *context, int log_level,
+                               const char *message) {
+    /* libsurvive does not expose the GlobalSceneSolver's scene counter via a
+     * stable query API, but it does emit this INFO line after each completed
+     * solve.  Parse it in the native callback so Python never runs on a
+     * libsurvive worker thread. */
+    unsigned long long count = 0;
+    if (message != NULL &&
+        sscanf(message, "Global solve with %llu scenes", &count) == 1) {
+        store_max(&pending_global_scene_count, (uint64_t)count);
+    }
+    log_process_func prior = prior_log_process;
+    if (prior != NULL) {
+        prior(context, log_level, message);
     }
 }
 
@@ -206,6 +246,10 @@ static void reset_events(void) {
                               memory_order_relaxed);
     }
     atomic_store_explicit(&global_scene_generation, UINT64_C(0),
+                          memory_order_relaxed);
+    atomic_store_explicit(&global_scene_count, UINT64_C(0),
+                          memory_order_relaxed);
+    atomic_store_explicit(&pending_global_scene_count, UINT64_C(0),
                           memory_order_relaxed);
     for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
         atomic_store_explicit(&lighthouse_scene[i].timestamp_ns, UINT64_C(0),
@@ -226,17 +270,20 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     unsigned long long sync_installer_address = 0;
     unsigned long long sweep_installer_address = 0;
     unsigned long long lighthouse_pose_installer_address = 0;
-    if (!PyArg_ParseTuple(args, "KKKKK", &context_address,
+    unsigned long long log_installer_address = 0;
+    if (!PyArg_ParseTuple(args, "KKKKKK", &context_address,
                           &lightcap_installer_address,
                           &sync_installer_address,
                           &sweep_installer_address,
-                          &lighthouse_pose_installer_address)) {
+                          &lighthouse_pose_installer_address,
+                          &log_installer_address)) {
         return NULL;
     }
     if (context_address == 0 || lightcap_installer_address == 0 ||
         sync_installer_address == 0 ||
         sweep_installer_address == 0 ||
-        lighthouse_pose_installer_address == 0) {
+        lighthouse_pose_installer_address == 0 ||
+        log_installer_address == 0) {
         PyErr_SetString(PyExc_ValueError,
                         "libsurvive context and installer addresses must be non-zero");
         return NULL;
@@ -255,6 +302,8 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
         (install_sweep_func)(uintptr_t)sweep_installer_address;
     install_lighthouse_pose_func lighthouse_pose_installer =
         (install_lighthouse_pose_func)(uintptr_t)lighthouse_pose_installer_address;
+    install_log_func log_installer =
+        (install_log_func)(uintptr_t)log_installer_address;
     reset_events();
     lightcap_process_func prior_lightcap =
         lightcap_installer(context, optical_health_lightcap);
@@ -263,10 +312,12 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
         sweep_installer(context, optical_health_sweep);
     lighthouse_pose_process_func prior_lighthouse_pose =
         lighthouse_pose_installer(context, optical_health_lighthouse_pose);
+    log_process_func prior_log = log_installer(context, optical_health_log);
     if (prior_lightcap == optical_health_lightcap ||
         prior_sync == optical_health_sync ||
         prior_sweep == optical_health_sweep ||
-        prior_lighthouse_pose == optical_health_lighthouse_pose) {
+        prior_lighthouse_pose == optical_health_lighthouse_pose ||
+        prior_log == optical_health_log) {
         PyErr_SetString(PyExc_RuntimeError,
                         "optical health callback is already in the libsurvive chain");
         return NULL;
@@ -275,6 +326,7 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     prior_sync_process = prior_sync;
     prior_sweep_process = prior_sweep;
     prior_lighthouse_pose_process = prior_lighthouse_pose;
+    prior_log_process = prior_log;
     installed_context = context;
     uint64_t context_epoch = atomic_fetch_add_explicit(
                                  &context_epoch_sequence, UINT64_C(1),
@@ -307,6 +359,7 @@ static PyObject *release_monitor(PyObject *self, PyObject *args) {
     prior_sync_process = NULL;
     prior_sweep_process = NULL;
     prior_lighthouse_pose_process = NULL;
+    prior_log_process = NULL;
     atomic_store_explicit(&installed_context_epoch, UINT64_C(0),
                           memory_order_release);
     reset_events();
@@ -375,20 +428,28 @@ static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
                                           memory_order_acquire);
     uint64_t scene_generation = atomic_load_explicit(
         &global_scene_generation, memory_order_acquire);
+    uint64_t scene_count = atomic_load_explicit(
+        &global_scene_count, memory_order_acquire);
     PyObject *epoch_value = PyLong_FromUnsignedLongLong(epoch);
     PyObject *generation_value = PyLong_FromUnsignedLongLong(scene_generation);
+    PyObject *scene_count_value = PyLong_FromUnsignedLongLong(scene_count);
     if (epoch_value == NULL || generation_value == NULL ||
+        scene_count_value == NULL ||
         PyDict_SetItemString(result, "context_epoch", epoch_value) < 0 ||
         PyDict_SetItemString(result, "global_scene_generation",
-                             generation_value) < 0) {
+                             generation_value) < 0 ||
+        PyDict_SetItemString(result, "global_scene_count",
+                             scene_count_value) < 0) {
         Py_XDECREF(epoch_value);
         Py_XDECREF(generation_value);
+        Py_XDECREF(scene_count_value);
         Py_DECREF(lighthouses);
         Py_DECREF(result);
         return NULL;
     }
     Py_DECREF(epoch_value);
     Py_DECREF(generation_value);
+    Py_DECREF(scene_count_value);
 
     for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
         uint64_t timestamp_ns = atomic_load_explicit(

@@ -26,6 +26,7 @@ class _FakeNativeMonitor:
         return {
             "context_epoch": 3,
             "global_scene_generation": 7,
+            "global_scene_count": 4,
             "lighthouses": {
                 "LH0": {
                     "timestamp_s": 10.0,
@@ -53,6 +54,7 @@ class _LiveHealthMonitor:
         return {
             "context_epoch": 1,
             "global_scene_generation": 2,
+            "global_scene_count": 0,
             "lighthouses": {},
         }
 
@@ -78,7 +80,7 @@ def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
     )
     installers = [
-        installer_type(lambda _context, _callback: None) for _ in range(4)
+        installer_type(lambda _context, _callback: None) for _ in range(5)
     ]
     addresses = [
         ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
@@ -100,6 +102,72 @@ def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
         scene = _optical_health_native.scene_snapshot()
         assert scene["global_scene_generation"] == 1
         assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+    finally:
+        _optical_health_native.release(context_address)
+
+
+def test_native_monitor_reports_completed_global_scene_count() -> None:
+    """The bridge must expose libsurvive's real GSS scene count."""
+    installer_type = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    )
+    log_callback_type = ctypes.CFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p
+    )
+    lighthouse_callback_type = ctypes.CFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_void_p
+    )
+    installed_log_callback = {}
+    installed_lighthouse_callback = {}
+
+    installers = [
+        installer_type(lambda _context, _callback: None) for _ in range(3)
+    ]
+
+    @installer_type
+    def install_lighthouse(_context, callback):
+        installed_lighthouse_callback["address"] = callback
+        return None
+
+    @installer_type
+    def install_log(_context, callback):
+        installed_log_callback["address"] = callback
+        return None
+
+    addresses = [
+        ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
+    ]
+    addresses.append(ctypes.cast(install_lighthouse, ctypes.c_void_p).value)
+    addresses.append(ctypes.cast(install_log, ctypes.c_void_p).value)
+    context_address = 0x2345
+
+    _optical_health_native.install(context_address, *addresses)
+    try:
+        callback = log_callback_type(installed_log_callback["address"])
+        callback(
+            context_address,
+            2,
+            b"Global solve with 3 scenes for 0 with error of 1.0/0.1",
+        )
+        callback(
+            context_address,
+            2,
+            b"Global solve with 4 scenes for 1 with error of 1.0/0.1",
+        )
+        assert _optical_health_native.scene_snapshot()["global_scene_count"] == 0
+
+        lighthouse_callback = lighthouse_callback_type(
+            installed_lighthouse_callback["address"]
+        )
+        pose = (ctypes.c_double * 7)(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        lighthouse_callback(
+            context_address,
+            0,
+            ctypes.cast(pose, ctypes.c_void_p),
+        )
+
+        scene = _optical_health_native.scene_snapshot()
+        assert scene["global_scene_count"] == 4
     finally:
         _optical_health_native.release(context_address)
 
@@ -218,6 +286,7 @@ def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
     assert scene["bridge_available"] is True
     assert scene["context_epoch"] == 3
     assert scene["global_scene_generation"] == 7
+    assert scene["global_scene_count"] == 4
     assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
 
 
@@ -234,8 +303,17 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
 
     class _Native:
         def __init__(self):
-            self.generation = 0
-            self.lighthouses = {}
+            # Simulate a live callback winning the race between native hook
+            # installation and cached BSD seeding for LH0.
+            self.generation = 1
+            self.lighthouses = {
+                "LH0": {
+                    "timestamp_s": 10.0,
+                    "generation": 1,
+                    "position": (9.0, 9.0, 9.0),
+                    "rotation": (1.0, 0.0, 0.0, 0.0),
+                }
+            }
 
         def install(self, *_addresses):
             return True
@@ -257,6 +335,7 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
             return {
                 "context_epoch": 1,
                 "global_scene_generation": self.generation,
+                "global_scene_count": 0,
                 "lighthouses": dict(self.lighthouses),
             }
 
@@ -289,6 +368,7 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
     monitor._install_sync = ctypes.c_void_p(0x1002)
     monitor._install_sweep = ctypes.c_void_p(0x1003)
     monitor._install_lighthouse_pose = ctypes.c_void_p(0x1004)
+    monitor._install_log = ctypes.c_void_p(0x1005)
     monitor._get_lighthouse_bsd = lambda ptr: bsd_by_ptr.get(ptr)
     monitor._close_simple_context = lambda _ptr: None
     monitor._native = native
@@ -305,8 +385,10 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
 
     scene = monitor.scene_snapshot()
     assert scene["global_scene_generation"] == 2
+    assert scene["global_scene_count"] == 0
+    assert scene["cached_map_lighthouses"] == ("LH0", "LH1")
+    assert scene["lighthouses"]["LH0"]["position"] == (9.0, 9.0, 9.0)
     assert set(scene["lighthouses"]) == {"LH0", "LH1"}
-    assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
     assert scene["lighthouses"]["LH1"]["rotation"] == (0.5, 0.5, 0.5, 0.5)
 
 
