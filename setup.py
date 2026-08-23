@@ -5,7 +5,7 @@ from setuptools import Extension, find_packages, setup
 
 setup(
     name="agx-pypika",
-    version="0.1.1",
+    version="0.2.0a1",
     author="Agilex Robotics RoboPPN",
     author_email="support@agilex.ai",
     description="Pika SDK for robotics applications",
@@ -38,7 +38,7 @@ SOFTWARE.
         "opencv-python",
         "pyserial",
         "pyrealsense2",
-        "pysurvive",
+        "pysurvive==1.1.200",
         "wxpython",
         "Gooey"
     ],

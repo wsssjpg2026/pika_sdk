@@ -15,6 +15,20 @@ class _FakeNativeMonitor:
     def snapshot(self, _window_s):
         return self._snapshot
 
+    def scene_snapshot(self):
+        return {
+            "context_epoch": 3,
+            "global_scene_generation": 7,
+            "lighthouses": {
+                "LH0": {
+                    "timestamp_s": 10.0,
+                    "generation": 7,
+                    "position": (1.0, 2.0, 3.0),
+                    "rotation": (1.0, 0.0, 0.0, 0.0),
+                }
+            },
+        }
+
 
 class _SequencedNativeMonitor:
     def __init__(self, snapshots):
@@ -126,6 +140,31 @@ def test_snapshot_distinguishes_raw_reacquisition_from_decoded_tracking(
     assert health["optical_measurement_count"] == 0
     assert health["optical_lighthouse_count"] == 0
     assert health["optical_event_sequence"] == 27
+
+
+def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _FakeNativeMonitor((0, 0, 0, 0, 0, 0, 0))
+
+    scene = monitor.scene_snapshot()
+
+    assert scene["bridge_available"] is True
+    assert scene["context_epoch"] == 3
+    assert scene["global_scene_generation"] == 7
+    assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+
+
+def test_scene_snapshot_fails_closed_when_native_bridge_is_not_installed() -> None:
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = False
+    monitor._error_reason = "missing required hook"
+
+    scene = monitor.scene_snapshot()
+
+    assert scene["bridge_available"] is False
+    assert scene["bridge_error"] == "missing required hook"
+    assert scene["context_epoch"] == 0
 
 
 def test_close_releases_destroyed_context_for_a_clean_decoder_restart() -> None:

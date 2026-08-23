@@ -15,6 +15,10 @@
 typedef struct SurviveObject SurviveObject;
 typedef struct SurviveContext SurviveContext;
 typedef void LightcapElement;
+typedef struct {
+    double Pos[3];
+    double Rot[4];
+} SurvivePose;
 typedef uint8_t survive_channel;
 typedef uint32_t survive_timecode;
 typedef void (*lightcap_process_func)(SurviveObject *, const LightcapElement *);
@@ -28,14 +32,25 @@ typedef void (*sweep_process_func)(SurviveObject *, survive_channel, int,
                                    survive_timecode, bool);
 typedef sweep_process_func (*install_sweep_func)(SurviveContext *,
                                                  sweep_process_func);
+typedef void (*lighthouse_pose_process_func)(SurviveContext *, uint8_t,
+                                             const SurvivePose *);
+typedef lighthouse_pose_process_func (*install_lighthouse_pose_func)(
+    SurviveContext *, lighthouse_pose_process_func);
 
 #define EVENT_CAPACITY 2048u
 #define CHANNEL_CAPACITY 16u
+#define LIGHTHOUSE_CAPACITY 16u
 
 typedef struct {
     _Atomic uint64_t timestamp_ns;
     _Atomic uint8_t channel;
 } OpticalEvent;
+
+typedef struct {
+    _Atomic uint64_t timestamp_ns;
+    _Atomic uint64_t generation;
+    _Atomic uint64_t pose_bits[7];
+} LighthouseSceneEvent;
 
 static OpticalEvent raw_events[EVENT_CAPACITY];
 static OpticalEvent decoded_events[EVENT_CAPACITY];
@@ -44,7 +59,12 @@ static _Atomic uint64_t decoded_write_sequence;
 static lightcap_process_func prior_lightcap_process;
 static sync_process_func prior_sync_process;
 static sweep_process_func prior_sweep_process;
+static lighthouse_pose_process_func prior_lighthouse_pose_process;
 static SurviveContext *installed_context;
+static LighthouseSceneEvent lighthouse_scene[LIGHTHOUSE_CAPACITY];
+static _Atomic uint64_t context_epoch_sequence;
+static _Atomic uint64_t installed_context_epoch;
+static _Atomic uint64_t global_scene_generation;
 
 static uint64_t monotonic_ns(void) {
     struct timespec ts;
@@ -52,6 +72,22 @@ static uint64_t monotonic_ns(void) {
         return 0;
     }
     return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+}
+
+static uint64_t double_to_bits(double value) {
+    union {
+        double value;
+        uint64_t bits;
+    } converted = {.value = value};
+    return converted.bits;
+}
+
+static double bits_to_double(uint64_t bits) {
+    union {
+        double value;
+        uint64_t bits;
+    } converted = {.bits = bits};
+    return converted.value;
 }
 
 static void record_optical_event(OpticalEvent *buffer,
@@ -99,6 +135,36 @@ static void optical_health_sweep(SurviveObject *object, survive_channel channel,
     }
 }
 
+static void optical_health_lighthouse_pose(SurviveContext *context,
+                                           uint8_t lighthouse_index,
+                                           const SurvivePose *pose) {
+    if (pose != NULL && lighthouse_index < LIGHTHOUSE_CAPACITY) {
+        LighthouseSceneEvent *event = &lighthouse_scene[lighthouse_index];
+        for (unsigned i = 0; i < 3; ++i) {
+            atomic_store_explicit(&event->pose_bits[i],
+                                  double_to_bits(pose->Pos[i]),
+                                  memory_order_relaxed);
+        }
+        for (unsigned i = 0; i < 4; ++i) {
+            atomic_store_explicit(&event->pose_bits[i + 3],
+                                  double_to_bits(pose->Rot[i]),
+                                  memory_order_relaxed);
+        }
+        uint64_t generation = atomic_fetch_add_explicit(
+                                  &global_scene_generation, UINT64_C(1),
+                                  memory_order_relaxed) +
+                              UINT64_C(1);
+        atomic_store_explicit(&event->generation, generation,
+                              memory_order_relaxed);
+        atomic_store_explicit(&event->timestamp_ns, monotonic_ns(),
+                              memory_order_release);
+    }
+    lighthouse_pose_process_func prior = prior_lighthouse_pose_process;
+    if (prior != NULL) {
+        prior(context, lighthouse_index, pose);
+    }
+}
+
 static void reset_events(void) {
     atomic_store_explicit(&raw_write_sequence, UINT64_C(0), memory_order_relaxed);
     atomic_store_explicit(&decoded_write_sequence, UINT64_C(0), memory_order_relaxed);
@@ -110,6 +176,18 @@ static void reset_events(void) {
         atomic_store_explicit(&decoded_events[i].timestamp_ns, UINT64_C(0),
                               memory_order_relaxed);
     }
+    atomic_store_explicit(&global_scene_generation, UINT64_C(0),
+                          memory_order_relaxed);
+    for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
+        atomic_store_explicit(&lighthouse_scene[i].timestamp_ns, UINT64_C(0),
+                              memory_order_relaxed);
+        atomic_store_explicit(&lighthouse_scene[i].generation, UINT64_C(0),
+                              memory_order_relaxed);
+        for (unsigned j = 0; j < 7; ++j) {
+            atomic_store_explicit(&lighthouse_scene[i].pose_bits[j], UINT64_C(0),
+                                  memory_order_relaxed);
+        }
+    }
 }
 
 static PyObject *install_monitor(PyObject *self, PyObject *args) {
@@ -118,15 +196,18 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     unsigned long long lightcap_installer_address = 0;
     unsigned long long sync_installer_address = 0;
     unsigned long long sweep_installer_address = 0;
-    if (!PyArg_ParseTuple(args, "KKKK", &context_address,
+    unsigned long long lighthouse_pose_installer_address = 0;
+    if (!PyArg_ParseTuple(args, "KKKKK", &context_address,
                           &lightcap_installer_address,
                           &sync_installer_address,
-                          &sweep_installer_address)) {
+                          &sweep_installer_address,
+                          &lighthouse_pose_installer_address)) {
         return NULL;
     }
     if (context_address == 0 || lightcap_installer_address == 0 ||
         sync_installer_address == 0 ||
-        sweep_installer_address == 0) {
+        sweep_installer_address == 0 ||
+        lighthouse_pose_installer_address == 0) {
         PyErr_SetString(PyExc_ValueError,
                         "libsurvive context and installer addresses must be non-zero");
         return NULL;
@@ -143,15 +224,20 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
         (install_sync_func)(uintptr_t)sync_installer_address;
     install_sweep_func sweep_installer =
         (install_sweep_func)(uintptr_t)sweep_installer_address;
+    install_lighthouse_pose_func lighthouse_pose_installer =
+        (install_lighthouse_pose_func)(uintptr_t)lighthouse_pose_installer_address;
     reset_events();
     lightcap_process_func prior_lightcap =
         lightcap_installer(context, optical_health_lightcap);
     sync_process_func prior_sync = sync_installer(context, optical_health_sync);
     sweep_process_func prior_sweep =
         sweep_installer(context, optical_health_sweep);
+    lighthouse_pose_process_func prior_lighthouse_pose =
+        lighthouse_pose_installer(context, optical_health_lighthouse_pose);
     if (prior_lightcap == optical_health_lightcap ||
         prior_sync == optical_health_sync ||
-        prior_sweep == optical_health_sweep) {
+        prior_sweep == optical_health_sweep ||
+        prior_lighthouse_pose == optical_health_lighthouse_pose) {
         PyErr_SetString(PyExc_RuntimeError,
                         "optical health callback is already in the libsurvive chain");
         return NULL;
@@ -159,7 +245,14 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     prior_lightcap_process = prior_lightcap;
     prior_sync_process = prior_sync;
     prior_sweep_process = prior_sweep;
+    prior_lighthouse_pose_process = prior_lighthouse_pose;
     installed_context = context;
+    uint64_t context_epoch = atomic_fetch_add_explicit(
+                                 &context_epoch_sequence, UINT64_C(1),
+                                 memory_order_relaxed) +
+                             UINT64_C(1);
+    atomic_store_explicit(&installed_context_epoch, context_epoch,
+                          memory_order_release);
     Py_RETURN_TRUE;
 }
 
@@ -184,8 +277,79 @@ static PyObject *release_monitor(PyObject *self, PyObject *args) {
     prior_lightcap_process = NULL;
     prior_sync_process = NULL;
     prior_sweep_process = NULL;
+    prior_lighthouse_pose_process = NULL;
+    atomic_store_explicit(&installed_context_epoch, UINT64_C(0),
+                          memory_order_release);
     reset_events();
     Py_RETURN_NONE;
+}
+
+static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    PyObject *result = PyDict_New();
+    PyObject *lighthouses = PyDict_New();
+    if (result == NULL || lighthouses == NULL) {
+        Py_XDECREF(result);
+        Py_XDECREF(lighthouses);
+        return NULL;
+    }
+
+    uint64_t epoch = atomic_load_explicit(&installed_context_epoch,
+                                          memory_order_acquire);
+    uint64_t scene_generation = atomic_load_explicit(
+        &global_scene_generation, memory_order_acquire);
+    PyObject *epoch_value = PyLong_FromUnsignedLongLong(epoch);
+    PyObject *generation_value = PyLong_FromUnsignedLongLong(scene_generation);
+    if (epoch_value == NULL || generation_value == NULL ||
+        PyDict_SetItemString(result, "context_epoch", epoch_value) < 0 ||
+        PyDict_SetItemString(result, "global_scene_generation",
+                             generation_value) < 0) {
+        Py_XDECREF(epoch_value);
+        Py_XDECREF(generation_value);
+        Py_DECREF(lighthouses);
+        Py_DECREF(result);
+        return NULL;
+    }
+    Py_DECREF(epoch_value);
+    Py_DECREF(generation_value);
+
+    for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
+        uint64_t timestamp_ns = atomic_load_explicit(
+            &lighthouse_scene[i].timestamp_ns, memory_order_acquire);
+        if (timestamp_ns == 0) {
+            continue;
+        }
+        double pose[7];
+        for (unsigned j = 0; j < 7; ++j) {
+            pose[j] = bits_to_double(atomic_load_explicit(
+                &lighthouse_scene[i].pose_bits[j], memory_order_relaxed));
+        }
+        uint64_t generation = atomic_load_explicit(
+            &lighthouse_scene[i].generation, memory_order_relaxed);
+        PyObject *entry = Py_BuildValue(
+            "{s:d,s:K,s:(ddd),s:(dddd)}",
+            "timestamp_s", (double)timestamp_ns / 1000000000.0,
+            "generation", (unsigned long long)generation,
+            "position", pose[0], pose[1], pose[2],
+            "rotation", pose[3], pose[4], pose[5], pose[6]);
+        char name[8];
+        PyOS_snprintf(name, sizeof(name), "LH%u", i);
+        if (entry == NULL || PyDict_SetItemString(lighthouses, name, entry) < 0) {
+            Py_XDECREF(entry);
+            Py_DECREF(lighthouses);
+            Py_DECREF(result);
+            return NULL;
+        }
+        Py_DECREF(entry);
+    }
+    if (PyDict_SetItemString(result, "lighthouses", lighthouses) < 0) {
+        Py_DECREF(lighthouses);
+        Py_DECREF(result);
+        return NULL;
+    }
+    Py_DECREF(lighthouses);
+    return result;
 }
 
 static void snapshot_events(OpticalEvent *buffer, uint64_t now,
@@ -266,6 +430,8 @@ static PyMethodDef methods[] = {
      "Forget a libsurvive context after it has been destroyed."},
     {"snapshot", snapshot_monitor, METH_VARARGS,
      "Return raw and decoded optical event snapshots."},
+    {"scene_snapshot", scene_snapshot, METH_NOARGS,
+     "Return context epoch and global Lighthouse scene events."},
     {NULL, NULL, 0, NULL},
 };
 

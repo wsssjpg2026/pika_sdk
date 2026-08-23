@@ -108,8 +108,10 @@ class _LibsurviveOpticalHealthMonitor:
         self._install_lightcap = None
         self._install_sync = None
         self._install_sweep = None
+        self._install_lighthouse_pose = None
         self._close_simple_context = None
         self._native = None
+        self._error_reason = None
         self._had_recent_raw_optical_events = None
         self._had_recent_optical_events = None
         try:
@@ -124,9 +126,13 @@ class _LibsurviveOpticalHealthMonitor:
             self._install_lightcap = lib.get("survive_install_lightcap_fn", "cdecl")
             self._install_sync = lib.get("survive_install_sync_fn", "cdecl")
             self._install_sweep = lib.get("survive_install_sweep_fn", "cdecl")
+            self._install_lighthouse_pose = lib.get(
+                "survive_install_lighthouse_pose_fn", "cdecl"
+            )
             self._close_simple_context = generated.survive_simple_close
             self._native = native
         except Exception as exc:
+            self._error_reason = str(exc)
             logger.error(
                 "native libsurvive optical monitor unavailable; pose consumers "
                 "must not treat fused timestamps as optical freshness: %s",
@@ -140,6 +146,7 @@ class _LibsurviveOpticalHealthMonitor:
             and self._install_lightcap is not None
             and self._install_sync is not None
             and self._install_sweep is not None
+            and self._install_lighthouse_pose is not None
             and self._close_simple_context is not None
             and self._native is not None
         )
@@ -166,20 +173,29 @@ class _LibsurviveOpticalHealthMonitor:
             sweep_installer_address = ctypes.cast(
                 self._install_sweep, ctypes.c_void_p
             ).value
+            lighthouse_pose_installer_address = ctypes.cast(
+                self._install_lighthouse_pose, ctypes.c_void_p
+            ).value
             self._native.install(
                 context_address,
                 lightcap_installer_address,
                 installer_address,
                 sweep_installer_address,
+                lighthouse_pose_installer_address,
             )
             self._installed = True
             logger.info(
-                "native libsurvive raw-lightcap + decoded sync/sweep monitor installed"
+                "native libsurvive optical + global-scene monitor installed"
             )
             return True
         except Exception as exc:
+            self._error_reason = str(exc)
             logger.error("Failed to install libsurvive optical monitor: %s", exc)
             return False
+
+    @property
+    def error_reason(self):
+        return self._error_reason
 
     def close(self, simple_context):
         """Stop/destroy a SimpleContext and release the native hook identity."""
@@ -279,6 +295,27 @@ class _LibsurviveOpticalHealthMonitor:
             "pose_confidence": None,
         }
 
+    def scene_snapshot(self):
+        """Return raw global-scene facts without applying readiness policy."""
+        if not self._installed:
+            return {
+                "bridge_available": False,
+                "bridge_error": self._error_reason
+                or "native libsurvive monitor is not installed",
+                "context_epoch": 0,
+                "global_scene_generation": 0,
+                "lighthouses": {},
+            }
+        snapshot = self._native.scene_snapshot()
+        if not isinstance(snapshot, dict):
+            raise RuntimeError(
+                "outdated pika optical native extension; reinstall agx-pypika "
+                "to rebuild _optical_health_native"
+            )
+        snapshot["bridge_available"] = True
+        snapshot["bridge_error"] = None
+        return snapshot
+
 class ViveTracker:
     """
     Vive Tracker device class, provides access interface for Vive Tracker device pose data
@@ -319,6 +356,8 @@ class ViveTracker:
         self.data_lock = threading.Lock()
         self.latest_poses = {}  # Store latest pose for each device
         self._optical_health_monitor = _LibsurviveOpticalHealthMonitor()
+        self._lighthouse_discovered_at = {}
+        self._lighthouse_cohort_generation = 0
         
         # Thread objects
         self.collector_thread = None
@@ -439,6 +478,8 @@ class ViveTracker:
         with self.data_lock:
             self.latest_poses.clear()
             self.devices_info.clear()
+            self._lighthouse_discovered_at.clear()
+            self._lighthouse_cohort_generation = 0
         self.collector_thread = None
         self.processor_thread = None
         self.device_monitor_thread = None
@@ -479,6 +520,9 @@ class ViveTracker:
                     if device_name not in self.devices_info:
                         logger.info(f"Detected new device: {device_name}")
                         self.devices_info[device_name] = {"updates": 0, "last_update": 0}
+                        if device_name.startswith("LH"):
+                            self._lighthouse_discovered_at[device_name] = time.monotonic()
+                            self._lighthouse_cohort_generation += 1
         except Exception as e:
             logger.error(f"Error updating device list: {e}")
     
@@ -495,10 +539,20 @@ class ViveTracker:
             logger.warning("Warning: No devices detected")
         else:
             logger.info(f"Detected {len(devices)} device(s):")
-            for device in devices:
-                device_name = str(device.Name(), 'utf-8')
-                logger.info(f"  - {device_name}")
-                self.devices_info[device_name] = {"updates": 0, "last_update": 0}
+            with self.data_lock:
+                for device in devices:
+                    device_name = str(device.Name(), 'utf-8')
+                    logger.info(f"  - {device_name}")
+                    if device_name not in self.devices_info:
+                        self.devices_info[device_name] = {
+                            "updates": 0,
+                            "last_update": 0,
+                        }
+                        if device_name.startswith("LH"):
+                            self._lighthouse_discovered_at[device_name] = (
+                                time.monotonic()
+                            )
+                            self._lighthouse_cohort_generation += 1
         
         # Continuously get latest poses
         while self.running and self.context.Running():
@@ -512,6 +566,9 @@ class ViveTracker:
                     if device_name not in self.devices_info:
                         logger.info(f"Detected new device update: {device_name}")
                         self.devices_info[device_name] = {"updates": 0, "last_update": 0}
+                        if device_name.startswith("LH"):
+                            self._lighthouse_discovered_at[device_name] = time.monotonic()
+                            self._lighthouse_cohort_generation += 1
                 
                 # Get pose data
                 pose_obj = updated.Pose()
@@ -630,6 +687,62 @@ class ViveTracker:
         
         with self.data_lock:
             return list(self.devices_info.keys())
+
+    def get_tracking_health(self, device_name=None):
+        """Return optical and global-scene facts for higher-level policy.
+
+        This method intentionally does not decide whether tracking is ready.
+        It reports the native context epoch, global-scene events, discovered
+        Lighthouse cohort, and the latest real optical measurements.  A robot
+        integration can then apply policy appropriate to its safety envelope.
+        """
+        self._update_device_list()
+        scene = self._optical_health_monitor.scene_snapshot()
+        with self.data_lock:
+            discovered = tuple(
+                sorted(name for name in self.devices_info if name.startswith("LH"))
+            )
+            discovered_at = {
+                name: self._lighthouse_discovered_at.get(name, 0.0)
+                for name in discovered
+            }
+            cohort_generation = self._lighthouse_cohort_generation
+            pose = self.latest_poses.get(device_name) if device_name else None
+            if pose is None:
+                pose = next(
+                    (
+                        value
+                        for name, value in self.latest_poses.items()
+                        if not name.startswith("LH")
+                    ),
+                    None,
+                )
+        scene.update(
+            {
+                "discovered_lighthouses": discovered,
+                "lighthouse_discovered_at": discovered_at,
+                "lighthouse_cohort_generation": cohort_generation,
+            }
+        )
+        if pose is not None:
+            for field in (
+                "raw_optical_timestamp_s",
+                "raw_optical_age_s",
+                "raw_optical_measurement_count",
+                "raw_optical_event_sequence",
+                "optical_timestamp_s",
+                "optical_age_s",
+                "optical_measurement_count",
+                "optical_lighthouse_count",
+                "optical_event_sequence",
+                "pose_confidence",
+            ):
+                scene[field] = getattr(pose, field, None)
+            scene["tracker_device"] = pose.device_name
+            scene["tracker_pose_timestamp_s"] = pose.timestamp
+            scene["tracker_position"] = tuple(float(v) for v in pose.position)
+            scene["tracker_rotation"] = tuple(float(v) for v in pose.rotation)
+        return scene
     
     def get_device_info(self, device_name=None):
         """

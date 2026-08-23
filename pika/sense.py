@@ -380,7 +380,21 @@ class Sense:
             return tracker.get_devices()
         else:
             logger.warning("Vive Tracker not initialized, unable to get device list")
-            return []
+        return []
+
+    def get_tracker_health(self, device_name=None):
+        """Return native optical/global-scene facts for the Vive Tracker."""
+        tracker = self.get_vive_tracker()
+        if tracker:
+            return tracker.get_tracking_health(device_name)
+        return {
+            "bridge_available": False,
+            "bridge_error": "Vive Tracker is unavailable",
+            "context_epoch": 0,
+            "global_scene_generation": 0,
+            "lighthouses": {},
+            "discovered_lighthouses": (),
+        }
     
     def light_ctrl(self, light_id):
         """
