@@ -43,15 +43,241 @@ except ImportError:
 
 class PoseData:
     """Pose data structure for storing and formatting pose information"""
-    def __init__(self, device_name, timestamp, position, rotation):
+    def __init__(
+        self,
+        device_name,
+        timestamp,
+        position,
+        rotation,
+        *,
+        optical_timestamp_s=None,
+        optical_age_s=None,
+        optical_measurement_count=None,
+        optical_lighthouse_count=None,
+        raw_optical_timestamp_s=None,
+        raw_optical_age_s=None,
+        raw_optical_measurement_count=None,
+        raw_optical_event_sequence=None,
+        optical_event_sequence=None,
+        pose_confidence=None,
+    ):
         self.device_name = device_name
         self.timestamp = timestamp
         self.position = position  # [x, y, z]
         self.rotation = rotation  # [x, y, z, w] quaternion
+        # ``timestamp`` is the latest fused pose time and advances from IMU
+        # reports even while the tracker is optically occluded.  These fields
+        # are a snapshot of libsurvive's actual light observations, allowing
+        # safety-critical consumers to distinguish optical tracking from
+        # inertial prediction.
+        self.optical_timestamp_s = optical_timestamp_s
+        self.optical_age_s = optical_age_s
+        self.optical_measurement_count = optical_measurement_count
+        self.optical_lighthouse_count = optical_lighthouse_count
+        # Raw lightcap hits prove that Tracker photodiodes can see Lighthouse
+        # light even while Gen2 sync/sweep decoding is still reacquiring.
+        self.raw_optical_timestamp_s = raw_optical_timestamp_s
+        self.raw_optical_age_s = raw_optical_age_s
+        self.raw_optical_measurement_count = raw_optical_measurement_count
+        self.raw_optical_event_sequence = raw_optical_event_sequence
+        self.optical_event_sequence = optical_event_sequence
+        self.pose_confidence = pose_confidence
 
     def __str__(self):
         """Format and output pose information"""
         return f"{self.device_name}: T: {self.timestamp:.6f} P: {self.position[0]:9.6f}, {self.position[1]:9.6f}, {self.position[2]:9.6f} R: {self.rotation[0]:9.6f}, {self.rotation[1]:9.6f}, {self.rotation[2]:9.6f}, {self.rotation[3]:9.6f}"
+
+
+class _LibsurviveOpticalHealthMonitor:
+    """Observe raw lightcap and decoded sync/sweep callbacks through a C bridge.
+
+    ``Pose()`` is fused IMU output, so its timestamp continues through an
+    optical occlusion.  The bridge hooks libsurvive's public raw lightcap and
+    decoded sync/sweep callbacks, chains their existing C handlers, and records
+    only C11 atomics.  Raw lightcap hits expose physical reacquisition before
+    the Gen2 decoder emits trustworthy sync/sweep events.  Python merely polls
+    snapshots from its normal worker thread, avoiding callbacks from a native
+    libsurvive thread into the Python interpreter.
+    """
+
+    _WINDOW_S = 0.1
+
+    def __init__(self):
+        self._installed = False
+        self._get_context = None
+        self._install_lightcap = None
+        self._install_sync = None
+        self._install_sweep = None
+        self._close_simple_context = None
+        self._native = None
+        self._had_recent_raw_optical_events = None
+        self._had_recent_optical_events = None
+        try:
+            from . import _optical_health_native as native
+            from pysurvive import pysurvive_generated as generated
+
+            lib = generated._libs["survive"]
+            get_context = lib.get("survive_simple_get_ctx", "cdecl")
+            get_context.argtypes = [generated.POINTER(generated.SurviveSimpleContext)]
+            get_context.restype = generated.POINTER(generated.SurviveContext)
+            self._get_context = get_context
+            self._install_lightcap = lib.get("survive_install_lightcap_fn", "cdecl")
+            self._install_sync = lib.get("survive_install_sync_fn", "cdecl")
+            self._install_sweep = lib.get("survive_install_sweep_fn", "cdecl")
+            self._close_simple_context = generated.survive_simple_close
+            self._native = native
+        except Exception as exc:
+            logger.error(
+                "native libsurvive optical monitor unavailable; pose consumers "
+                "must not treat fused timestamps as optical freshness: %s",
+                exc,
+            )
+
+    @property
+    def available(self):
+        return (
+            self._get_context is not None
+            and self._install_lightcap is not None
+            and self._install_sync is not None
+            and self._install_sweep is not None
+            and self._close_simple_context is not None
+            and self._native is not None
+        )
+
+    def install(self, simple_context):
+        if os.environ.get("PIKA_DISABLE_OPTICAL_HEALTH") == "1":
+            logger.warning("libsurvive optical monitor disabled by environment")
+            return False
+        if not self.available or simple_context is None:
+            return False
+        try:
+            full_context = self._get_context(simple_context.ptr)
+            if not full_context:
+                return False
+            import ctypes
+
+            context_address = ctypes.cast(full_context, ctypes.c_void_p).value
+            lightcap_installer_address = ctypes.cast(
+                self._install_lightcap, ctypes.c_void_p
+            ).value
+            installer_address = ctypes.cast(
+                self._install_sync, ctypes.c_void_p
+            ).value
+            sweep_installer_address = ctypes.cast(
+                self._install_sweep, ctypes.c_void_p
+            ).value
+            self._native.install(
+                context_address,
+                lightcap_installer_address,
+                installer_address,
+                sweep_installer_address,
+            )
+            self._installed = True
+            logger.info(
+                "native libsurvive raw-lightcap + decoded sync/sweep monitor installed"
+            )
+            return True
+        except Exception as exc:
+            logger.error("Failed to install libsurvive optical monitor: %s", exc)
+            return False
+
+    def close(self, simple_context):
+        """Stop/destroy a SimpleContext and release the native hook identity."""
+        if simple_context is None:
+            return
+        full_context_address = None
+        closed = False
+        try:
+            if self._get_context is not None:
+                import ctypes
+
+                full_context = self._get_context(simple_context.ptr)
+                if full_context:
+                    full_context_address = ctypes.cast(
+                        full_context, ctypes.c_void_p
+                    ).value
+            if self._close_simple_context is None:
+                raise RuntimeError("survive_simple_close is unavailable")
+            self._close_simple_context(simple_context.ptr)
+            closed = True
+        finally:
+            # release() is only safe after the context's own thread is gone.
+            if (
+                closed
+                and full_context_address is not None
+                and self._native is not None
+                and hasattr(self._native, "release")
+            ):
+                self._native.release(full_context_address)
+            if closed:
+                self._installed = False
+                self._had_recent_raw_optical_events = None
+                self._had_recent_optical_events = None
+
+    def snapshot(self, _device_name):
+        if not self._installed:
+            return None
+        snapshot = self._native.snapshot(self._WINDOW_S)
+        if len(snapshot) != 7:
+            raise RuntimeError(
+                "outdated pika optical native extension; reinstall agx-pypika "
+                "to rebuild _optical_health_native"
+            )
+        (
+            raw_latest_ns,
+            raw_measurement_count,
+            raw_event_sequence,
+            latest_ns,
+            measurement_count,
+            lighthouse_count,
+            optical_event_sequence,
+        ) = snapshot
+        now = time.monotonic()
+        last_raw_s = raw_latest_ns / 1_000_000_000.0
+        last_sync_s = latest_ns / 1_000_000_000.0
+        has_recent_raw_events = raw_measurement_count > 0
+        if has_recent_raw_events != self._had_recent_raw_optical_events:
+            self._had_recent_raw_optical_events = has_recent_raw_events
+            if has_recent_raw_events:
+                logger.info(
+                    "Lighthouse raw light available: events=%d",
+                    raw_measurement_count,
+                )
+            elif raw_latest_ns > 0:
+                logger.warning(
+                    "Lighthouse raw light stopped; last sensor hit was %.0fms ago",
+                    max(0.0, now - last_raw_s) * 1000.0,
+                )
+        has_recent_events = measurement_count > 0
+        if has_recent_events != self._had_recent_optical_events:
+            self._had_recent_optical_events = has_recent_events
+            if has_recent_events:
+                logger.info(
+                    "Lighthouse optical measurements available: "
+                    "events=%d channels=%d",
+                    measurement_count,
+                    lighthouse_count,
+                )
+            elif latest_ns > 0:
+                logger.warning(
+                    "Lighthouse optical measurements stopped; last event "
+                    "was %.0fms ago",
+                    max(0.0, now - last_sync_s) * 1000.0,
+                )
+        return {
+            "raw_optical_timestamp_s": last_raw_s,
+            "raw_optical_age_s": max(0.0, now - last_raw_s),
+            "raw_optical_measurement_count": int(raw_measurement_count),
+            "raw_optical_event_sequence": int(raw_event_sequence),
+            "optical_timestamp_s": last_sync_s,
+            "optical_age_s": max(0.0, now - last_sync_s),
+            "optical_measurement_count": int(measurement_count),
+            "optical_lighthouse_count": int(lighthouse_count),
+            "optical_event_sequence": int(optical_event_sequence),
+            # libsurvive's global-fit error/covariance is not exposed by
+            # this stable callback API.  Do not invent a confidence value.
+            "pose_confidence": None,
+        }
 
 class ViveTracker:
     """
@@ -92,6 +318,7 @@ class ViveTracker:
         self.devices_info = {}  # Dictionary for storing device information
         self.data_lock = threading.Lock()
         self.latest_poses = {}  # Store latest pose for each device
+        self._optical_health_monitor = _LibsurviveOpticalHealthMonitor()
         
         # Thread objects
         self.collector_thread = None
@@ -134,6 +361,11 @@ class ViveTracker:
             
             logger.info("pysurvive initialized successfully")
             logger.info(f"Using '{self.product}' pose transform")
+            if not self._optical_health_monitor.install(self.context):
+                logger.error(
+                    "Optical monitoring is unavailable; tracker health "
+                    "will fail closed."
+                )
             
             # Mark as running
             self.running = True
@@ -168,8 +400,8 @@ class ViveTracker:
         """
         Disconnect from Vive Tracker devices
         """
-        if not self.running:
-            return
+        if not self.running and self.context is None:
+            return True
         
         logger.info("Stopping Vive Tracker pose tracking...")
         self.running = False
@@ -184,7 +416,18 @@ class ViveTracker:
         if self.device_monitor_thread:
             self.device_monitor_thread.join(timeout=2.0)
         
-        # Clean up resources
+        # Stop libsurvive's own thread and destroy the native context.  The
+        # upstream Python wrapper does not expose this in SimpleContext, so a
+        # plain ``self.context = None`` leaks the decoder and prevents a safe
+        # in-process restart after optical reacquisition stalls.
+        context = self.context
+        context_closed = True
+        if context is not None:
+            try:
+                self._optical_health_monitor.close(context)
+            except Exception as exc:
+                logger.error("Failed to close libsurvive context: %s", exc)
+                context_closed = False
         self.context = None
         self.pose_queue = queue.Queue(maxsize=100)
         
@@ -192,8 +435,16 @@ class ViveTracker:
         logger.info("Device statistics:")
         for device_name, info in self.devices_info.items():
             logger.info(f"  - {device_name}: update count {info['updates']}")
+
+        with self.data_lock:
+            self.latest_poses.clear()
+            self.devices_info.clear()
+        self.collector_thread = None
+        self.processor_thread = None
+        self.device_monitor_thread = None
         
         logger.info("Vive Tracker disconnected")
+        return context_closed
     
     def _device_monitor(self):
         """
@@ -288,8 +539,19 @@ class ViveTracker:
                 position = [x, y, z]
                 rotation = [qx, qy, qz, qw]
                     
+                # Snapshot lighthouse support separately from the fused pose.
+                # During occlusion ``timestamp`` continues from IMU reports,
+                # while ``optical_timestamp_s`` correctly stops advancing.
+                optical_health = self._optical_health_monitor.snapshot(device_name) or {}
+
                 # Create pose data object
-                pose = PoseData(device_name, timestamp, position, rotation)
+                pose = PoseData(
+                    device_name,
+                    timestamp,
+                    position,
+                    rotation,
+                    **optical_health,
+                )
                 
                 # Update device info
                 with self.data_lock:

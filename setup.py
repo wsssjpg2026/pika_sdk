@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from setuptools import setup, find_packages
+from setuptools import Extension, find_packages, setup
 
 setup(
     name="agx-pypika",
@@ -57,5 +57,12 @@ SOFTWARE.
     ],
     python_requires='>=3.6',
     packages=find_packages(),
+    ext_modules=[
+        Extension(
+            "pika.tracker._optical_health_native",
+            sources=["pika/tracker/_optical_health_native.c"],
+            extra_compile_args=["-std=c11"],
+        )
+    ],
     keywords="robotics, sdk, pika, data",
 )

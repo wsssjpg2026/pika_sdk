@@ -64,6 +64,7 @@ class Sense:
         self._vive_tracker_config = None
         self._vive_tracker_lh = None
         self._vive_tracker_args = None
+        self._vive_tracker_lock = threading.RLock()
     
     def connect(self):
         """
@@ -117,10 +118,12 @@ class Sense:
                 
         # Disconnect Vive Tracker
         if self._vive_tracker:
-            try:
-                self._vive_tracker.disconnect()
-            except:
-                pass
+            with self._vive_tracker_lock:
+                try:
+                    self._vive_tracker.disconnect()
+                except:
+                    pass
+                self._vive_tracker = None
     
     def _data_callback(self, data):
         """
@@ -296,21 +299,56 @@ class Sense:
             ViveTracker: Vive Tracker object
         """
         # Lazy import to avoid circular imports
-        if self._vive_tracker is None:
+        with self._vive_tracker_lock:
+            if self._vive_tracker is None:
+                try:
+                    from .tracker.vive_tracker import ViveTracker
+                    tracker = ViveTracker(
+                        config_path=self._vive_tracker_config,
+                        lh_config=self._vive_tracker_lh,
+                        args=self._vive_tracker_args
+                    )
+                    if not tracker.connect():
+                        return None
+                    self._vive_tracker = tracker
+                except Exception as e:
+                    logger.error(f"Failed to initialize Vive Tracker: {e}")
+                    return None
+
+        return self._vive_tracker
+
+    def restart_vive_tracker(self):
+        """Rebuild the libsurvive context while leaving Pika serial connected."""
+        with self._vive_tracker_lock:
+            old_tracker = self._vive_tracker
+            self._vive_tracker = None
+            if old_tracker is not None:
+                try:
+                    if old_tracker.disconnect() is False:
+                        logger.error(
+                            "Refusing Vive Tracker restart because the old "
+                            "libsurvive context did not close cleanly"
+                        )
+                        return False
+                except Exception as e:
+                    logger.error(f"Failed to stop Vive Tracker for restart: {e}")
+                    return False
             try:
                 from .tracker.vive_tracker import ViveTracker
-                self._vive_tracker = ViveTracker(
+                tracker = ViveTracker(
                     config_path=self._vive_tracker_config,
                     lh_config=self._vive_tracker_lh,
                     args=self._vive_tracker_args,
                     product='sense'
                 )
-                self._vive_tracker.connect()
+                if not tracker.connect():
+                    return False
+                self._vive_tracker = tracker
+                logger.warning("Vive Tracker decoder context restarted")
+                return True
             except Exception as e:
-                logger.error(f"Failed to initialize Vive Tracker: {e}")
-                return None
-        
-        return self._vive_tracker
+                logger.error(f"Failed to restart Vive Tracker: {e}")
+                return False
     
     def get_pose(self, device_name=None):
         """
