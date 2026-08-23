@@ -698,6 +698,13 @@ class ViveTracker:
         """
         self._update_device_list()
         scene = self._optical_health_monitor.scene_snapshot()
+        # Optical events are independent of fused pose callbacks.  A tracker
+        # can remain perfectly still while its photodiodes continue receiving
+        # Lighthouse sweeps, so health must be sampled at query time instead
+        # of being copied from the last cached PoseData object.
+        optical = self._optical_health_monitor.snapshot(device_name)
+        if optical is not None:
+            scene.update(optical)
         with self.data_lock:
             discovered = tuple(
                 sorted(name for name in self.devices_info if name.startswith("LH"))
@@ -725,19 +732,6 @@ class ViveTracker:
             }
         )
         if pose is not None:
-            for field in (
-                "raw_optical_timestamp_s",
-                "raw_optical_age_s",
-                "raw_optical_measurement_count",
-                "raw_optical_event_sequence",
-                "optical_timestamp_s",
-                "optical_age_s",
-                "optical_measurement_count",
-                "optical_lighthouse_count",
-                "optical_event_sequence",
-                "pose_confidence",
-            ):
-                scene[field] = getattr(pose, field, None)
             scene["tracker_device"] = pose.device_name
             scene["tracker_pose_timestamp_s"] = pose.timestamp
             scene["tracker_position"] = tuple(float(v) for v in pose.position)

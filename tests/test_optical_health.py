@@ -1,11 +1,16 @@
 """Hardware-free checks for libsurvive optical-sync health monitoring."""
 
 import ctypes
+import threading
 
 import pytest
 
 from pika.sense import Sense
-from pika.tracker.vive_tracker import _LibsurviveOpticalHealthMonitor
+from pika.tracker.vive_tracker import (
+    PoseData,
+    ViveTracker,
+    _LibsurviveOpticalHealthMonitor,
+)
 
 
 class _FakeNativeMonitor:
@@ -36,6 +41,33 @@ class _SequencedNativeMonitor:
 
     def snapshot(self, _window_s):
         return next(self._snapshots)
+
+
+class _LiveHealthMonitor:
+    def __init__(self):
+        self._sequence = 100
+
+    def scene_snapshot(self):
+        return {
+            "context_epoch": 1,
+            "global_scene_generation": 2,
+            "lighthouses": {},
+        }
+
+    def snapshot(self, _device_name):
+        self._sequence += 1
+        return {
+            "raw_optical_timestamp_s": 1.0,
+            "raw_optical_age_s": 0.0,
+            "raw_optical_measurement_count": 8,
+            "raw_optical_event_sequence": self._sequence,
+            "optical_timestamp_s": 1.0,
+            "optical_age_s": 0.0,
+            "optical_measurement_count": 8,
+            "optical_lighthouse_count": 2,
+            "optical_event_sequence": self._sequence,
+            "pose_confidence": None,
+        }
 
 
 def test_snapshot_uses_sync_receipt_not_fused_pose_timestamp(monkeypatch) -> None:
@@ -165,6 +197,46 @@ def test_scene_snapshot_fails_closed_when_native_bridge_is_not_installed() -> No
     assert scene["bridge_available"] is False
     assert scene["bridge_error"] == "missing required hook"
     assert scene["context_epoch"] == 0
+
+
+def test_tracking_health_refreshes_optical_facts_without_a_new_pose() -> None:
+    """Health queries must not reuse optical facts frozen in cached PoseData."""
+    tracker = ViveTracker.__new__(ViveTracker)
+    tracker._update_device_list = lambda: None
+    tracker._optical_health_monitor = _LiveHealthMonitor()
+    tracker.data_lock = threading.Lock()
+    tracker.devices_info = {"LH0": {}, "LH1": {}, "T20": {}}
+    tracker._lighthouse_discovered_at = {"LH0": 1.0, "LH1": 1.0}
+    tracker._lighthouse_cohort_generation = 2
+    tracker.latest_poses = {
+        "T20": PoseData(
+            "T20",
+            1.0,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            raw_optical_timestamp_s=1.0,
+            raw_optical_age_s=0.0,
+            raw_optical_measurement_count=1,
+            raw_optical_event_sequence=7,
+            optical_timestamp_s=1.0,
+            optical_age_s=0.0,
+            optical_measurement_count=1,
+            optical_lighthouse_count=2,
+            optical_event_sequence=7,
+            pose_confidence=None,
+        )
+    }
+    # This hardware-free instance is intentionally not connected.  Suppress
+    # the production destructor, which owns fields irrelevant to this test.
+    tracker.running = False
+    tracker.context = None
+
+    first = tracker.get_tracking_health("T20")
+    second = tracker.get_tracking_health("T20")
+
+    assert first["optical_event_sequence"] == 101
+    assert second["optical_event_sequence"] == 102
+    assert first["tracker_pose_timestamp_s"] == second["tracker_pose_timestamp_s"]
 
 
 def test_close_releases_destroyed_context_for_a_clean_decoder_restart() -> None:
