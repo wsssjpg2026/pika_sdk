@@ -2,10 +2,12 @@
 
 import ctypes
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from pika.sense import Sense
+from pika.tracker import _optical_health_native
 from pika.tracker.vive_tracker import (
     PoseData,
     ViveTracker,
@@ -68,6 +70,38 @@ class _LiveHealthMonitor:
             "optical_event_sequence": self._sequence,
             "pose_confidence": None,
         }
+
+
+def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
+    """The native bridge must preserve any newer callback-owned map entry."""
+    installer_type = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    )
+    installers = [
+        installer_type(lambda _context, _callback: None) for _ in range(4)
+    ]
+    addresses = [
+        ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
+    ]
+    context_address = 0x1234
+    _optical_health_native.install(context_address, *addresses)
+    try:
+        assert _optical_health_native.seed_lighthouse_pose(
+            0,
+            (1.0, 2.0, 3.0),
+            (1.0, 0.0, 0.0, 0.0),
+        )
+        assert not _optical_health_native.seed_lighthouse_pose(
+            0,
+            (9.0, 9.0, 9.0),
+            (0.5, 0.5, 0.5, 0.5),
+        )
+
+        scene = _optical_health_native.scene_snapshot()
+        assert scene["global_scene_generation"] == 1
+        assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+    finally:
+        _optical_health_native.release(context_address)
 
 
 def test_snapshot_uses_sync_receipt_not_fused_pose_timestamp(monkeypatch) -> None:
@@ -185,6 +219,95 @@ def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
     assert scene["context_epoch"] == 3
     assert scene["global_scene_generation"] == 7
     assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+
+
+def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None:
+    """A cached valid map must not depend on a post-install pose callback."""
+
+    class _Object:
+        def __init__(self, name):
+            self.ptr = object()
+            self._name = name
+
+        def Name(self):
+            return self._name
+
+    class _Native:
+        def __init__(self):
+            self.generation = 0
+            self.lighthouses = {}
+
+        def install(self, *_addresses):
+            return True
+
+        def seed_lighthouse_pose(self, index, position, rotation):
+            name = f"LH{index}"
+            if name in self.lighthouses:
+                return False
+            self.generation += 1
+            self.lighthouses[name] = {
+                "timestamp_s": 10.0,
+                "generation": self.generation,
+                "position": tuple(position),
+                "rotation": tuple(rotation),
+            }
+            return True
+
+        def scene_snapshot(self):
+            return {
+                "context_epoch": 1,
+                "global_scene_generation": self.generation,
+                "lighthouses": dict(self.lighthouses),
+            }
+
+    lh0 = _Object("LH0")
+    lh1 = _Object("LH1")
+    lh2_unsolved = _Object("LH2")
+    tracker = _Object("T20")
+
+    def _bsd(position, rotation, *, valid=True):
+        return SimpleNamespace(
+            contents=SimpleNamespace(
+                PositionSet=int(valid),
+                Pose=SimpleNamespace(Pos=position, Rot=rotation),
+            )
+        )
+
+    bsd_by_ptr = {
+        lh0.ptr: _bsd((1.0, 2.0, 3.0), (1.0, 0.0, 0.0, 0.0)),
+        lh1.ptr: _bsd((-1.0, 0.5, 2.0), (0.5, 0.5, 0.5, 0.5)),
+        lh2_unsolved.ptr: _bsd(
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+            valid=False,
+        ),
+    }
+    native = _Native()
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._get_context = lambda _ptr: ctypes.c_void_p(0x1000)
+    monitor._install_lightcap = ctypes.c_void_p(0x1001)
+    monitor._install_sync = ctypes.c_void_p(0x1002)
+    monitor._install_sweep = ctypes.c_void_p(0x1003)
+    monitor._install_lighthouse_pose = ctypes.c_void_p(0x1004)
+    monitor._get_lighthouse_bsd = lambda ptr: bsd_by_ptr.get(ptr)
+    monitor._close_simple_context = lambda _ptr: None
+    monitor._native = native
+    context = type(
+        "Context",
+        (),
+        {
+            "ptr": object(),
+            "Objects": lambda _self: [lh0, lh1, lh2_unsolved, tracker],
+        },
+    )()
+
+    assert monitor.install(context) is True
+
+    scene = monitor.scene_snapshot()
+    assert scene["global_scene_generation"] == 2
+    assert set(scene["lighthouses"]) == {"LH0", "LH1"}
+    assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+    assert scene["lighthouses"]["LH1"]["rotation"] == (0.5, 0.5, 0.5, 0.5)
 
 
 def test_scene_snapshot_fails_closed_when_native_bridge_is_not_installed() -> None:
