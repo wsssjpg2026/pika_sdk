@@ -5,6 +5,7 @@ Vive Tracker module - based on pysurvive library
 Provides access interface for Vive Tracker device pose data
 """
 
+import ctypes
 import sys
 import time
 import os
@@ -125,6 +126,7 @@ class _LibsurviveOpticalHealthMonitor:
         self._install_lighthouse_pose = None
         self._install_log = None
         self._get_lighthouse_bsd = None
+        self._get_floor_offset = None
         self._get_context_lock = None
         self._release_context_lock = None
         self._close_simple_context = None
@@ -159,6 +161,12 @@ class _LibsurviveOpticalHealthMonitor:
                 generated.BaseStationData
             )
             self._get_lighthouse_bsd = get_lighthouse_bsd
+            get_floor_offset = lib.get("survive_get_floor_offset", "cdecl")
+            get_floor_offset.argtypes = [
+                generated.POINTER(generated.SurviveContext)
+            ]
+            get_floor_offset.restype = ctypes.c_double
+            self._get_floor_offset = get_floor_offset
             get_context_lock = lib.get("survive_get_ctx_lock", "cdecl")
             get_context_lock.argtypes = [
                 generated.POINTER(generated.SurviveContext)
@@ -198,6 +206,7 @@ class _LibsurviveOpticalHealthMonitor:
             and self._install_lighthouse_pose is not None
             and self._install_log is not None
             and self._get_lighthouse_bsd is not None
+            and self._get_floor_offset is not None
             and self._get_context_lock is not None
             and self._release_context_lock is not None
             and self._close_simple_context is not None
@@ -218,8 +227,6 @@ class _LibsurviveOpticalHealthMonitor:
                 simple_context,
                 full_context=full_context,
             )
-            import ctypes
-
             context_address = ctypes.cast(full_context, ctypes.c_void_p).value
             lightcap_installer_address = ctypes.cast(
                 self._install_lightcap, ctypes.c_void_p
@@ -268,16 +275,20 @@ class _LibsurviveOpticalHealthMonitor:
 
         ``SimpleContext`` loads persisted Lighthouse poses during construction,
         before this monitor can register its callback.  Only ``PositionSet``
-        entries are authoritative.  Taking this snapshot before hook
-        installation keeps a subsequent live callback from being mislabeled
-        as the source of the cached map.
+        entries are authoritative.  ``BaseStationData.Pose`` is in
+        libsurvive's internal frame, whereas the public Lighthouse-pose hook
+        subtracts ``floor_offset`` from Z.  Convert the cached snapshot to that
+        public frame before seeding the native monitor so a later live callback
+        does not look like a map jump.
         """
         entries = []
         locked = False
+        floor_offset_m = 0.0
         try:
             if full_context is not None:
                 self._get_context_lock(full_context)
                 locked = True
+                floor_offset_m = float(self._get_floor_offset(full_context))
             for simple_object in simple_context.Objects():
                 name = _simple_object_name(simple_object)
                 if not name.startswith("LH") or not name[2:].isdigit():
@@ -286,9 +297,10 @@ class _LibsurviveOpticalHealthMonitor:
                 if not bsd_pointer or not bool(bsd_pointer.contents.PositionSet):
                     continue
                 pose = bsd_pointer.contents.Pose
-                position = tuple(float(value) for value in pose.Pos)
+                position = [float(value) for value in pose.Pos]
+                position[2] -= floor_offset_m
                 rotation = tuple(float(value) for value in pose.Rot)
-                entries.append((name, int(name[2:]), position, rotation))
+                entries.append((name, int(name[2:]), tuple(position), rotation))
         finally:
             if locked:
                 self._release_context_lock(full_context)

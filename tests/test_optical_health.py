@@ -74,6 +74,44 @@ class _LiveHealthMonitor:
         }
 
 
+def test_cached_lighthouse_scene_uses_live_callback_coordinate_frame() -> None:
+    """Cached BSD poses must match libsurvive's floor-adjusted callback poses."""
+    monitor = _LibsurviveOpticalHealthMonitor.__new__(
+        _LibsurviveOpticalHealthMonitor
+    )
+    monitor._get_context_lock = lambda _context: None
+    monitor._release_context_lock = lambda _context: None
+    monitor._get_floor_offset = lambda _context: -0.237354561687
+    cached_pose = SimpleNamespace(
+        Pos=(1.0, 2.0, 3.0),
+        Rot=(1.0, 0.0, 0.0, 0.0),
+    )
+    cached_bsd = SimpleNamespace(
+        contents=SimpleNamespace(PositionSet=1, Pose=cached_pose)
+    )
+    monitor._get_lighthouse_bsd = lambda _ptr: cached_bsd
+
+    lighthouse = SimpleNamespace(Name=lambda: b"LH1", ptr=object())
+    simple_context = SimpleNamespace(Objects=lambda: (lighthouse,))
+
+    scene = monitor._existing_lighthouse_scene(
+        simple_context,
+        full_context=object(),
+    )
+
+    # survive_default_raw_lighthouse_pose_process publishes BSD.Pose with
+    # external_pose.Pos[2] -= ctx->floor_offset.  The cached seed must use the
+    # same frame or readiness reports a false 237.4 mm map change.
+    assert scene == (
+        (
+            "LH1",
+            1,
+            pytest.approx((1.0, 2.0, 3.237354561687)),
+            (1.0, 0.0, 0.0, 0.0),
+        ),
+    )
+
+
 def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
     """The native bridge must preserve any newer callback-owned map entry."""
     installer_type = ctypes.CFUNCTYPE(
@@ -375,6 +413,7 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
     monitor._install_lighthouse_pose = ctypes.c_void_p(0x1004)
     monitor._install_log = ctypes.c_void_p(0x1005)
     monitor._get_lighthouse_bsd = lambda ptr: bsd_by_ptr.get(ptr)
+    monitor._get_floor_offset = lambda _context: 0.0
     monitor._get_context_lock = lambda _context: None
     monitor._release_context_lock = lambda _context: None
     monitor._close_simple_context = lambda _ptr: None
@@ -461,6 +500,7 @@ def test_scene_snapshot_reconciles_map_that_becomes_valid_without_callback() -> 
     monitor._get_lighthouse_bsd = lambda ptr: (
         SimpleNamespace(contents=bsd) if ptr is lighthouse.ptr else None
     )
+    monitor._get_floor_offset = lambda _context: 0.0
     monitor._get_context_lock = lambda _context: None
     monitor._release_context_lock = lambda _context: None
     monitor._close_simple_context = lambda _ptr: None
