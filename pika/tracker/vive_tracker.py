@@ -111,8 +111,12 @@ class _LibsurviveOpticalHealthMonitor:
         self._install_lighthouse_pose = None
         self._install_log = None
         self._get_lighthouse_bsd = None
+        self._get_context_lock = None
+        self._release_context_lock = None
         self._close_simple_context = None
         self._native = None
+        self._simple_context = None
+        self._full_context = None
         self._error_reason = None
         self._had_recent_raw_optical_events = None
         self._had_recent_optical_events = None
@@ -141,6 +145,20 @@ class _LibsurviveOpticalHealthMonitor:
                 generated.BaseStationData
             )
             self._get_lighthouse_bsd = get_lighthouse_bsd
+            get_context_lock = lib.get("survive_get_ctx_lock", "cdecl")
+            get_context_lock.argtypes = [
+                generated.POINTER(generated.SurviveContext)
+            ]
+            get_context_lock.restype = None
+            self._get_context_lock = get_context_lock
+            release_context_lock = lib.get(
+                "survive_release_ctx_lock", "cdecl"
+            )
+            release_context_lock.argtypes = [
+                generated.POINTER(generated.SurviveContext)
+            ]
+            release_context_lock.restype = None
+            self._release_context_lock = release_context_lock
             self._close_simple_context = generated.survive_simple_close
             if not hasattr(native, "seed_lighthouse_pose"):
                 raise RuntimeError(
@@ -166,6 +184,8 @@ class _LibsurviveOpticalHealthMonitor:
             and self._install_lighthouse_pose is not None
             and self._install_log is not None
             and self._get_lighthouse_bsd is not None
+            and self._get_context_lock is not None
+            and self._release_context_lock is not None
             and self._close_simple_context is not None
             and self._native is not None
         )
@@ -180,7 +200,10 @@ class _LibsurviveOpticalHealthMonitor:
             full_context = self._get_context(simple_context.ptr)
             if not full_context:
                 return False
-            cached_scene = self._existing_lighthouse_scene(simple_context)
+            cached_scene = self._existing_lighthouse_scene(
+                simple_context,
+                full_context=full_context,
+            )
             import ctypes
 
             context_address = ctypes.cast(full_context, ctypes.c_void_p).value
@@ -208,6 +231,8 @@ class _LibsurviveOpticalHealthMonitor:
                 log_installer_address,
             )
             self._seed_existing_lighthouse_scene(cached_scene)
+            self._simple_context = simple_context
+            self._full_context = full_context
             cached_lighthouses = tuple(
                 sorted(entry[0] for entry in cached_scene)
             )
@@ -224,7 +249,7 @@ class _LibsurviveOpticalHealthMonitor:
             logger.error("Failed to install libsurvive optical monitor: %s", exc)
             return False
 
-    def _existing_lighthouse_scene(self, simple_context):
+    def _existing_lighthouse_scene(self, simple_context, *, full_context=None):
         """Snapshot authoritative cached map entries before installing hooks.
 
         ``SimpleContext`` loads persisted Lighthouse poses during construction,
@@ -234,17 +259,25 @@ class _LibsurviveOpticalHealthMonitor:
         as the source of the cached map.
         """
         entries = []
-        for simple_object in simple_context.Objects():
-            name = str(simple_object.Name())
-            if not name.startswith("LH") or not name[2:].isdigit():
-                continue
-            bsd_pointer = self._get_lighthouse_bsd(simple_object.ptr)
-            if not bsd_pointer or not bool(bsd_pointer.contents.PositionSet):
-                continue
-            pose = bsd_pointer.contents.Pose
-            position = tuple(float(value) for value in pose.Pos)
-            rotation = tuple(float(value) for value in pose.Rot)
-            entries.append((name, int(name[2:]), position, rotation))
+        locked = False
+        try:
+            if full_context is not None:
+                self._get_context_lock(full_context)
+                locked = True
+            for simple_object in simple_context.Objects():
+                name = str(simple_object.Name())
+                if not name.startswith("LH") or not name[2:].isdigit():
+                    continue
+                bsd_pointer = self._get_lighthouse_bsd(simple_object.ptr)
+                if not bsd_pointer or not bool(bsd_pointer.contents.PositionSet):
+                    continue
+                pose = bsd_pointer.contents.Pose
+                position = tuple(float(value) for value in pose.Pos)
+                rotation = tuple(float(value) for value in pose.Rot)
+                entries.append((name, int(name[2:]), position, rotation))
+        finally:
+            if locked:
+                self._release_context_lock(full_context)
         return tuple(entries)
 
     def _seed_existing_lighthouse_scene(self, entries):
@@ -257,6 +290,36 @@ class _LibsurviveOpticalHealthMonitor:
         """
         for _name, index, position, rotation in entries:
             self._native.seed_lighthouse_pose(index, position, rotation)
+
+    def _reconcile_lighthouse_scene(self):
+        """Observe a valid map even when libsurvive suppresses its callback.
+
+        ``PositionSet`` and ``Pose`` are authoritative after a successful
+        global solve.  Reconcile only missing native slots so a newer
+        callback-owned map entry is never overwritten.
+        """
+        if self._simple_context is None or self._full_context is None:
+            return
+        current_scene = self._existing_lighthouse_scene(
+            self._simple_context,
+            full_context=self._full_context,
+        )
+        self._seed_existing_lighthouse_scene(current_scene)
+
+    def _needs_lighthouse_scene_reconciliation(self, snapshot):
+        """Return whether a completed solve lacks authoritative map entries."""
+        if self._simple_context is None:
+            return False
+        if int(snapshot.get("global_scene_count", 0) or 0) <= 0:
+            return False
+        expected = {
+            str(simple_object.Name())
+            for simple_object in self._simple_context.Objects()
+            if str(simple_object.Name()).startswith("LH")
+            and str(simple_object.Name())[2:].isdigit()
+        }
+        recorded = set(dict(snapshot.get("lighthouses", {})))
+        return bool(expected - recorded)
 
     @property
     def error_reason(self):
@@ -292,6 +355,8 @@ class _LibsurviveOpticalHealthMonitor:
                 self._native.release(full_context_address)
             if closed:
                 self._installed = False
+                self._simple_context = None
+                self._full_context = None
                 self._had_recent_raw_optical_events = None
                 self._had_recent_optical_events = None
                 self._cached_map_lighthouses = ()
@@ -375,6 +440,9 @@ class _LibsurviveOpticalHealthMonitor:
                 "lighthouses": {},
             }
         snapshot = self._native.scene_snapshot()
+        if self._needs_lighthouse_scene_reconciliation(snapshot):
+            self._reconcile_lighthouse_scene()
+            snapshot = self._native.scene_snapshot()
         if not isinstance(snapshot, dict):
             raise RuntimeError(
                 "outdated pika optical native extension; reinstall agx-pypika "

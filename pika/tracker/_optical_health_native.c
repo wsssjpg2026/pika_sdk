@@ -428,21 +428,28 @@ static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
                                           memory_order_acquire);
     uint64_t scene_generation = atomic_load_explicit(
         &global_scene_generation, memory_order_acquire);
-    uint64_t scene_count = atomic_load_explicit(
+    uint64_t applied_scene_count = atomic_load_explicit(
         &global_scene_count, memory_order_acquire);
+    uint64_t scene_count = atomic_load_explicit(
+        &pending_global_scene_count, memory_order_acquire);
     PyObject *epoch_value = PyLong_FromUnsignedLongLong(epoch);
     PyObject *generation_value = PyLong_FromUnsignedLongLong(scene_generation);
     PyObject *scene_count_value = PyLong_FromUnsignedLongLong(scene_count);
+    PyObject *applied_scene_count_value =
+        PyLong_FromUnsignedLongLong(applied_scene_count);
     if (epoch_value == NULL || generation_value == NULL ||
-        scene_count_value == NULL ||
+        scene_count_value == NULL || applied_scene_count_value == NULL ||
         PyDict_SetItemString(result, "context_epoch", epoch_value) < 0 ||
         PyDict_SetItemString(result, "global_scene_generation",
                              generation_value) < 0 ||
         PyDict_SetItemString(result, "global_scene_count",
-                             scene_count_value) < 0) {
+                             scene_count_value) < 0 ||
+        PyDict_SetItemString(result, "applied_global_scene_count",
+                             applied_scene_count_value) < 0) {
         Py_XDECREF(epoch_value);
         Py_XDECREF(generation_value);
         Py_XDECREF(scene_count_value);
+        Py_XDECREF(applied_scene_count_value);
         Py_DECREF(lighthouses);
         Py_DECREF(result);
         return NULL;
@@ -450,6 +457,7 @@ static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
     Py_DECREF(epoch_value);
     Py_DECREF(generation_value);
     Py_DECREF(scene_count_value);
+    Py_DECREF(applied_scene_count_value);
 
     for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
         uint64_t timestamp_ns = atomic_load_explicit(

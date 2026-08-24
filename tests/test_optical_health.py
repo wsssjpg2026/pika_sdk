@@ -106,8 +106,8 @@ def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
         _optical_health_native.release(context_address)
 
 
-def test_native_monitor_reports_completed_global_scene_count() -> None:
-    """The bridge must expose libsurvive's real GSS scene count."""
+def test_native_monitor_reports_successful_global_scene_count_before_map_callback() -> None:
+    """GSS progress must not disappear while map application is still pending."""
     installer_type = ctypes.CFUNCTYPE(
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
     )
@@ -154,7 +154,9 @@ def test_native_monitor_reports_completed_global_scene_count() -> None:
             2,
             b"Global solve with 4 scenes for 1 with error of 1.0/0.1",
         )
-        assert _optical_health_native.scene_snapshot()["global_scene_count"] == 0
+        pending = _optical_health_native.scene_snapshot()
+        assert pending["global_scene_count"] == 4
+        assert pending["applied_global_scene_count"] == 0
 
         lighthouse_callback = lighthouse_callback_type(
             installed_lighthouse_callback["address"]
@@ -168,6 +170,7 @@ def test_native_monitor_reports_completed_global_scene_count() -> None:
 
         scene = _optical_health_native.scene_snapshot()
         assert scene["global_scene_count"] == 4
+        assert scene["applied_global_scene_count"] == 4
     finally:
         _optical_health_native.release(context_address)
 
@@ -370,6 +373,8 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
     monitor._install_lighthouse_pose = ctypes.c_void_p(0x1004)
     monitor._install_log = ctypes.c_void_p(0x1005)
     monitor._get_lighthouse_bsd = lambda ptr: bsd_by_ptr.get(ptr)
+    monitor._get_context_lock = lambda _context: None
+    monitor._release_context_lock = lambda _context: None
     monitor._close_simple_context = lambda _ptr: None
     monitor._native = native
     context = type(
@@ -390,6 +395,91 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
     assert scene["lighthouses"]["LH0"]["position"] == (9.0, 9.0, 9.0)
     assert set(scene["lighthouses"]) == {"LH0", "LH1"}
     assert scene["lighthouses"]["LH1"]["rotation"] == (0.5, 0.5, 0.5, 0.5)
+
+
+def test_scene_snapshot_reconciles_map_that_becomes_valid_without_callback() -> None:
+    """A delayed PositionSet update must not leave readiness at solved=[]."""
+
+    class _Object:
+        def __init__(self, name):
+            self.ptr = object()
+            self._name = name
+
+        def Name(self):
+            return self._name
+
+    class _Native:
+        def __init__(self):
+            self.generation = 0
+            self.lighthouses = {}
+
+        def install(self, *_addresses):
+            return True
+
+        def seed_lighthouse_pose(self, index, position, rotation):
+            name = f"LH{index}"
+            if name in self.lighthouses:
+                return False
+            self.generation += 1
+            self.lighthouses[name] = {
+                "timestamp_s": 10.0,
+                "generation": self.generation,
+                "position": tuple(position),
+                "rotation": tuple(rotation),
+            }
+            return True
+
+        def scene_snapshot(self):
+            return {
+                "context_epoch": 1,
+                "global_scene_generation": self.generation,
+                "global_scene_count": 3,
+                "applied_global_scene_count": 0,
+                "lighthouses": dict(self.lighthouses),
+            }
+
+    lighthouse = _Object("LH0")
+    tracker = _Object("T20")
+    bsd = SimpleNamespace(
+        PositionSet=0,
+        Pose=SimpleNamespace(
+            Pos=(1.0, 2.0, 3.0),
+            Rot=(1.0, 0.0, 0.0, 0.0),
+        ),
+    )
+    native = _Native()
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._get_context = lambda _ptr: ctypes.c_void_p(0x2000)
+    monitor._install_lightcap = ctypes.c_void_p(0x2001)
+    monitor._install_sync = ctypes.c_void_p(0x2002)
+    monitor._install_sweep = ctypes.c_void_p(0x2003)
+    monitor._install_lighthouse_pose = ctypes.c_void_p(0x2004)
+    monitor._install_log = ctypes.c_void_p(0x2005)
+    monitor._get_lighthouse_bsd = lambda ptr: (
+        SimpleNamespace(contents=bsd) if ptr is lighthouse.ptr else None
+    )
+    monitor._get_context_lock = lambda _context: None
+    monitor._release_context_lock = lambda _context: None
+    monitor._close_simple_context = lambda _ptr: None
+    monitor._native = native
+    context = type(
+        "Context",
+        (),
+        {
+            "ptr": object(),
+            "Objects": lambda _self: [lighthouse, tracker],
+        },
+    )()
+
+    assert monitor.install(context) is True
+    assert monitor.scene_snapshot()["lighthouses"] == {}
+
+    bsd.PositionSet = 1
+    scene = monitor.scene_snapshot()
+
+    assert scene["global_scene_count"] == 3
+    assert scene["cached_map_lighthouses"] == ()
+    assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
 
 
 def test_scene_snapshot_fails_closed_when_native_bridge_is_not_installed() -> None:
