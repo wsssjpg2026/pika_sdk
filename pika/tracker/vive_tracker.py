@@ -41,6 +41,20 @@ except ImportError:
     logger.error("pysurvive library not found, please ensure it is properly installed")
     raise ImportError("pysurvive library not found, please ensure it is properly installed")
 
+
+def _simple_object_name(simple_object):
+    """Return a pysurvive object name as text at the ctypes boundary."""
+    raw_name = simple_object.Name()
+    if isinstance(raw_name, bytes):
+        return raw_name.decode("utf-8")
+    if isinstance(raw_name, str):
+        return raw_name
+    raise TypeError(
+        "pysurvive SimpleObject.Name() returned unsupported type "
+        f"{type(raw_name).__name__}"
+    )
+
+
 class PoseData:
     """Pose data structure for storing and formatting pose information"""
     def __init__(
@@ -265,7 +279,7 @@ class _LibsurviveOpticalHealthMonitor:
                 self._get_context_lock(full_context)
                 locked = True
             for simple_object in simple_context.Objects():
-                name = str(simple_object.Name())
+                name = _simple_object_name(simple_object)
                 if not name.startswith("LH") or not name[2:].isdigit():
                     continue
                 bsd_pointer = self._get_lighthouse_bsd(simple_object.ptr)
@@ -312,12 +326,11 @@ class _LibsurviveOpticalHealthMonitor:
             return False
         if int(snapshot.get("global_scene_count", 0) or 0) <= 0:
             return False
-        expected = {
-            str(simple_object.Name())
-            for simple_object in self._simple_context.Objects()
-            if str(simple_object.Name()).startswith("LH")
-            and str(simple_object.Name())[2:].isdigit()
-        }
+        expected = set()
+        for simple_object in self._simple_context.Objects():
+            name = _simple_object_name(simple_object)
+            if name.startswith("LH") and name[2:].isdigit():
+                expected.add(name)
         recorded = set(dict(snapshot.get("lighthouses", {})))
         return bool(expected - recorded)
 
@@ -658,7 +671,7 @@ class ViveTracker:
             # Update device info dictionary
             with self.data_lock:
                 for device in devices:
-                    device_name = str(device.Name(), 'utf-8')
+                    device_name = _simple_object_name(device)
                     if device_name not in self.devices_info:
                         logger.info(f"Detected new device: {device_name}")
                         self.devices_info[device_name] = {"updates": 0, "last_update": 0}
@@ -683,7 +696,7 @@ class ViveTracker:
             logger.info(f"Detected {len(devices)} device(s):")
             with self.data_lock:
                 for device in devices:
-                    device_name = str(device.Name(), 'utf-8')
+                    device_name = _simple_object_name(device)
                     logger.info(f"  - {device_name}")
                     if device_name not in self.devices_info:
                         self.devices_info[device_name] = {
@@ -701,7 +714,7 @@ class ViveTracker:
             updated = self.context.NextUpdated()
             if updated:
                 # Get device name
-                device_name = str(updated.Name(), 'utf-8')
+                device_name = _simple_object_name(updated)
                 
                 # If new device, add to device info dictionary
                 with self.data_lock:

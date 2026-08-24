@@ -302,7 +302,9 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
             self._name = name
 
         def Name(self):
-            return self._name
+            # pysurvive declares this C API as ``c_char_p`` and therefore
+            # returns bytes at the real integration boundary.
+            return self._name.encode("utf-8")
 
     class _Native:
         def __init__(self):
@@ -406,7 +408,8 @@ def test_scene_snapshot_reconciles_map_that_becomes_valid_without_callback() -> 
             self._name = name
 
         def Name(self):
-            return self._name
+            # Match the bytes returned by the real pysurvive wrapper.
+            return self._name.encode("utf-8")
 
     class _Native:
         def __init__(self):
