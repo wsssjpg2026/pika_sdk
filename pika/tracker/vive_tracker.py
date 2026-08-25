@@ -115,7 +115,10 @@ class _LibsurviveOpticalHealthMonitor:
     libsurvive thread into the Python interpreter.
     """
 
-    _WINDOW_S = 0.1
+    # Diagnostics aggregation window, not a control safety timeout.  Keep
+    # enough history for ordinary Python/libsurvive scheduling jitter;
+    # consumers still enforce safety with the exact ``*_age_s`` fields.
+    _WINDOW_S = 0.3
 
     def __init__(self):
         self._installed = False

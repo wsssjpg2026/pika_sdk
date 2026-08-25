@@ -231,6 +231,33 @@ def test_snapshot_uses_sync_receipt_not_fused_pose_timestamp(monkeypatch) -> Non
     assert health["pose_confidence"] is None
 
 
+def test_recent_optical_window_tolerates_normal_scheduler_jitter(
+    monkeypatch,
+) -> None:
+    """A 100 ms scheduling gap must not erase otherwise recent visibility."""
+
+    class _WindowRecordingMonitor(_FakeNativeMonitor):
+        def __init__(self, snapshot):
+            super().__init__(snapshot)
+            self.window_s = None
+
+        def snapshot(self, window_s):
+            self.window_s = window_s
+            return super().snapshot(window_s)
+
+    native = _WindowRecordingMonitor(
+        (10_090_000_000, 4, 10, 10_080_000_000, 3, 2, 9)
+    )
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = native
+    monkeypatch.setattr("pika.tracker.vive_tracker.time.monotonic", lambda: 10.10)
+
+    monitor.snapshot("T20")
+
+    assert native.window_s == pytest.approx(0.3)
+
+
 def test_snapshot_reports_explicit_stale_health_when_optical_events_stop(
     monkeypatch,
 ) -> None:
