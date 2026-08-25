@@ -302,11 +302,12 @@ class Sense:
         with self._vive_tracker_lock:
             if self._vive_tracker is None:
                 try:
-                    from .tracker.vive_tracker import ViveTracker
-                    tracker = ViveTracker(
+                    from .tracker.process_vive_tracker import IsolatedViveTracker
+                    tracker = IsolatedViveTracker(
                         config_path=self._vive_tracker_config,
                         lh_config=self._vive_tracker_lh,
-                        args=self._vive_tracker_args
+                        args=self._vive_tracker_args,
+                        product='sense',
                     )
                     if not tracker.connect():
                         return None
@@ -322,6 +323,16 @@ class Sense:
         with self._vive_tracker_lock:
             old_tracker = self._vive_tracker
             if old_tracker is not None:
+                # Production Sense trackers live in a child process.  Reuse
+                # the proxy while replacing its worker so a native
+                # survive_simple_close deadlock can be terminated by the OS.
+                restart = getattr(old_tracker, "restart", None)
+                if callable(restart):
+                    try:
+                        return bool(restart())
+                    except Exception as e:
+                        logger.error(f"Failed to restart Vive Tracker worker: {e}")
+                        return False
                 try:
                     if old_tracker.disconnect() is False:
                         logger.error(

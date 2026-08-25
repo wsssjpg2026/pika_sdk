@@ -1,13 +1,16 @@
 """Hardware-free checks for libsurvive optical-sync health monitoring."""
 
 import ctypes
+import multiprocessing
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from pika.sense import Sense
 from pika.tracker import _optical_health_native
+from pika.tracker.process_vive_tracker import IsolatedViveTracker
 from pika.tracker.vive_tracker import (
     PoseData,
     ViveTracker,
@@ -72,6 +75,57 @@ class _LiveHealthMonitor:
             "optical_event_sequence": self._sequence,
             "pose_confidence": None,
         }
+
+
+class _BackendWithHungNativeClose:
+    """Minimal child backend whose native-style shutdown never returns."""
+
+    def __init__(self, **_kwargs):
+        self.connected = False
+
+    def connect(self):
+        self.connected = True
+        return True
+
+    def disconnect(self):
+        while True:
+            time.sleep(1.0)
+
+    def get_devices(self):
+        return ["LH0", "LH1", "T20"]
+
+    def get_pose(self, _device_name=None):
+        return None
+
+    def get_tracking_health(self, _device_name=None):
+        return {"bridge_available": True}
+
+    def lock_global_scene(self):
+        return True
+
+
+def test_isolated_tracker_restart_kills_hung_native_context() -> None:
+    """A stuck native close must not make tracker recovery permanently LOST."""
+    tracker = IsolatedViveTracker(
+        backend_factory=_BackendWithHungNativeClose,
+        process_context=multiprocessing.get_context("spawn"),
+        shutdown_grace_s=0.05,
+        startup_timeout_s=1.0,
+    )
+    try:
+        assert tracker.connect() is True
+        first_pid = tracker.worker_pid
+
+        started = time.monotonic()
+        assert tracker.restart() is True
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert tracker.worker_pid is not None
+        assert tracker.worker_pid != first_pid
+        assert tracker.get_devices() == ["LH0", "LH1", "T20"]
+    finally:
+        tracker.disconnect()
 
 
 def test_cached_lighthouse_scene_uses_live_callback_coordinate_frame() -> None:
@@ -769,6 +823,25 @@ def test_sense_restarts_only_the_vive_tracker_context(monkeypatch) -> None:
     assert old_tracker.disconnect_calls == 1
     assert isinstance(sense._vive_tracker, _NewTracker)
     assert sense._vive_tracker.connect_calls == 1
+
+
+def test_sense_restarts_isolated_tracker_worker_in_place() -> None:
+    sense = Sense(port="/dev/null")
+
+    class _ManagedTracker:
+        def __init__(self):
+            self.restart_calls = 0
+
+        def restart(self):
+            self.restart_calls += 1
+            return True
+
+    tracker = _ManagedTracker()
+    sense._vive_tracker = tracker
+
+    assert sense.restart_vive_tracker() is True
+    assert sense._vive_tracker is tracker
+    assert tracker.restart_calls == 1
 
 
 def test_sense_keeps_old_tracker_when_context_shutdown_is_not_clean(
