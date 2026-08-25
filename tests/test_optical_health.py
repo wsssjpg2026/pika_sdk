@@ -417,6 +417,44 @@ def test_snapshot_distinguishes_raw_reacquisition_from_decoded_tracking(
     assert health["optical_event_sequence"] == 27
 
 
+def test_snapshot_uses_libsurvive_lightcap_counter_when_native_raw_hook_is_silent(
+    monkeypatch,
+) -> None:
+    """The context counter must cover a lightcap hook that receives no calls.
+
+    The deployed libsurvive trace had hundreds of decoded sync/sweep events
+    while the native bridge reported raw_measurements=0 for the entire
+    session.  SurviveContext.lightcap_call_cnt is maintained by libsurvive
+    around whichever disambiguator callback is actually installed, so it is
+    the authoritative fallback for physical photodiode activity.
+    """
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _SequencedNativeMonitor(
+        (
+            (0, 0, 0, 10_000_000_000, 8, 2, 10),
+            (0, 0, 0, 10_050_000_000, 8, 2, 18),
+        )
+    )
+    context = SimpleNamespace(lightcap_call_cnt=100)
+    monitor._full_context = SimpleNamespace(contents=context)
+    monotonic_times = iter((10.00, 10.05))
+    monkeypatch.setattr(
+        "pika.tracker.vive_tracker.time.monotonic",
+        lambda: next(monotonic_times),
+    )
+
+    baseline = monitor.snapshot("T20")
+    context.lightcap_call_cnt = 112
+    observed = monitor.snapshot("T20")
+
+    assert baseline["raw_optical_measurement_count"] == 0
+    assert observed["raw_optical_timestamp_s"] == pytest.approx(10.05)
+    assert observed["raw_optical_age_s"] == pytest.approx(0.0)
+    assert observed["raw_optical_measurement_count"] == 12
+    assert observed["raw_optical_event_sequence"] == 112
+
+
 def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
     monitor = _LibsurviveOpticalHealthMonitor()
     monitor._installed = True

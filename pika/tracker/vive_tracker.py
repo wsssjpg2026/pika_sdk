@@ -6,6 +6,7 @@ Provides access interface for Vive Tracker device pose data
 """
 
 import ctypes
+from collections import deque
 import sys
 import time
 import os
@@ -140,6 +141,14 @@ class _LibsurviveOpticalHealthMonitor:
         self._had_recent_raw_optical_events = None
         self._had_recent_optical_events = None
         self._cached_map_lighthouses = ()
+        # libsurvive itself increments lightcap_call_cnt around the active
+        # disambiguator callback. Keep this independent observation because
+        # some HTCVive/libsurvive combinations bypass a previously installed
+        # lightcap hook while decoded sync/sweep callbacks remain active.
+        self._context_raw_lock = threading.Lock()
+        self._last_context_lightcap_count = None
+        self._last_context_raw_timestamp_s = 0.0
+        self._context_raw_batches = deque()
         try:
             from . import _optical_health_native as native
             from pysurvive import pysurvive_generated as generated
@@ -260,6 +269,7 @@ class _LibsurviveOpticalHealthMonitor:
             self._seed_existing_lighthouse_scene(cached_scene)
             self._simple_context = simple_context
             self._full_context = full_context
+            self._reset_context_raw_tracking()
             cached_lighthouses = tuple(
                 sorted(entry[0] for entry in cached_scene)
             )
@@ -394,9 +404,55 @@ class _LibsurviveOpticalHealthMonitor:
                 self._installed = False
                 self._simple_context = None
                 self._full_context = None
+                self._reset_context_raw_tracking()
                 self._had_recent_raw_optical_events = None
                 self._had_recent_optical_events = None
                 self._cached_map_lighthouses = ()
+
+    def _reset_context_raw_tracking(self):
+        with self._context_raw_lock:
+            self._last_context_lightcap_count = None
+            self._last_context_raw_timestamp_s = 0.0
+            self._context_raw_batches.clear()
+
+    def _context_raw_snapshot(self, now):
+        """Poll libsurvive's own raw-light callback counter.
+
+        The counter is updated inside ``SURVIVE_INVOKE_HOOK_SO(lightcap, ...)``
+        regardless of which disambiguator callback is currently installed.
+        A short deque reconstructs the recent-event window without consuming
+        events when multiple service threads poll concurrently.
+        """
+        full_context = self._full_context
+        if full_context is None:
+            return None
+        try:
+            counter = int(full_context.contents.lightcap_call_cnt)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+        with self._context_raw_lock:
+            previous = self._last_context_lightcap_count
+            self._last_context_lightcap_count = counter
+            if previous is not None:
+                # lightcap_call_cnt is uint32_t in pysurvive's generated ABI.
+                # A lower value denotes a reset, not a four-billion-hit burst.
+                delta = counter - previous if counter >= previous else 0
+                if delta > 0:
+                    self._last_context_raw_timestamp_s = now
+                    self._context_raw_batches.append((now, delta))
+            cutoff = now - self._WINDOW_S
+            while (
+                self._context_raw_batches
+                and self._context_raw_batches[0][0] < cutoff
+            ):
+                self._context_raw_batches.popleft()
+            recent_count = sum(batch[1] for batch in self._context_raw_batches)
+            return (
+                self._last_context_raw_timestamp_s,
+                int(recent_count),
+                counter,
+            )
 
     def snapshot(self, _device_name):
         if not self._installed:
@@ -418,6 +474,17 @@ class _LibsurviveOpticalHealthMonitor:
         ) = snapshot
         now = time.monotonic()
         last_raw_s = raw_latest_ns / 1_000_000_000.0
+        context_raw = self._context_raw_snapshot(now)
+        if context_raw is not None:
+            context_last_raw_s, context_raw_count, context_raw_sequence = (
+                context_raw
+            )
+            if context_last_raw_s >= last_raw_s:
+                last_raw_s = context_last_raw_s
+                raw_event_sequence = context_raw_sequence
+            raw_measurement_count = max(
+                int(raw_measurement_count), context_raw_count
+            )
         last_sync_s = latest_ns / 1_000_000_000.0
         has_recent_raw_events = raw_measurement_count > 0
         if has_recent_raw_events != self._had_recent_raw_optical_events:
