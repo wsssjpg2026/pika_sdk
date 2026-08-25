@@ -321,7 +321,6 @@ class Sense:
         """Rebuild the libsurvive context while leaving Pika serial connected."""
         with self._vive_tracker_lock:
             old_tracker = self._vive_tracker
-            self._vive_tracker = None
             if old_tracker is not None:
                 try:
                     if old_tracker.disconnect() is False:
@@ -333,6 +332,10 @@ class Sense:
                 except Exception as e:
                     logger.error(f"Failed to stop Vive Tracker for restart: {e}")
                     return False
+                # Detach only after the old tracker proves that all Python
+                # workers and the native context have stopped.  Keeping the
+                # owner on failure prevents an unreachable live C context.
+                self._vive_tracker = None
             try:
                 from .tracker.vive_tracker import ViveTracker
                 tracker = ViveTracker(

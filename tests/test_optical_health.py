@@ -731,3 +731,61 @@ def test_sense_restarts_only_the_vive_tracker_context(monkeypatch) -> None:
     assert old_tracker.disconnect_calls == 1
     assert isinstance(sense._vive_tracker, _NewTracker)
     assert sense._vive_tracker.connect_calls == 1
+
+
+def test_sense_keeps_old_tracker_when_context_shutdown_is_not_clean(
+    monkeypatch,
+) -> None:
+    """A failed shutdown must not orphan the only owner of the C context."""
+    sense = Sense(port="/dev/null")
+
+    class _OldTracker:
+        def disconnect(self):
+            return False
+
+    class _NewTracker:
+        def __init__(self, **_kwargs):
+            raise AssertionError("replacement context must not be created")
+
+    old_tracker = _OldTracker()
+    sense._vive_tracker = old_tracker
+    monkeypatch.setattr("pika.tracker.vive_tracker.ViveTracker", _NewTracker)
+
+    assert sense.restart_vive_tracker() is False
+    assert sense._vive_tracker is old_tracker
+
+
+def test_disconnect_refuses_to_destroy_context_used_by_a_live_worker() -> None:
+    """Never call survive_simple_close while a Python worker still uses it."""
+
+    class _LiveThread:
+        def join(self, timeout):
+            assert timeout == pytest.approx(2.0)
+
+        def is_alive(self):
+            return True
+
+    class _Monitor:
+        def __init__(self):
+            self.closed = []
+
+        def close(self, context):
+            self.closed.append(context)
+
+    tracker = ViveTracker.__new__(ViveTracker)
+    tracker.running = True
+    tracker.context = object()
+    tracker.collector_thread = _LiveThread()
+    tracker.processor_thread = None
+    tracker.device_monitor_thread = None
+    tracker.pose_queue = None
+    tracker.devices_info = {}
+    tracker.data_lock = threading.Lock()
+    tracker.latest_poses = {}
+    tracker._lighthouse_discovered_at = {}
+    tracker._lighthouse_cohort_generation = 0
+    tracker._optical_health_monitor = _Monitor()
+
+    assert tracker.disconnect() is False
+    assert tracker._optical_health_monitor.closed == []
+    assert tracker.context is not None

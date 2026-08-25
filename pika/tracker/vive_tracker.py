@@ -635,6 +635,29 @@ class ViveTracker:
             
         if self.device_monitor_thread:
             self.device_monitor_thread.join(timeout=2.0)
+
+        # ``survive_simple_close`` destroys memory that the workers access
+        # through ``self.context``.  A timed-out join is not permission to
+        # proceed: the collector can still be inside ``NextUpdated()`` while
+        # libsurvive is being torn down, which can deadlock the native close
+        # path.  Fail closed and preserve the tracker/context owner so the
+        # process can be restarted cleanly by its supervisor.
+        live_workers = [
+            name
+            for name, worker in (
+                ("collector", self.collector_thread),
+                ("processor", self.processor_thread),
+                ("device-monitor", self.device_monitor_thread),
+            )
+            if worker is not None and worker.is_alive()
+        ]
+        if live_workers:
+            logger.error(
+                "Refusing to destroy libsurvive context while worker threads "
+                "are still alive: %s",
+                ", ".join(live_workers),
+            )
+            return False
         
         # Stop libsurvive's own thread and destroy the native context.  The
         # upstream Python wrapper does not expose this in SimpleContext, so a
@@ -648,6 +671,11 @@ class ViveTracker:
             except Exception as exc:
                 logger.error("Failed to close libsurvive context: %s", exc)
                 context_closed = False
+        if not context_closed:
+            # Retain ownership of the live/unknown native context.  Creating
+            # a replacement alongside it can contend for the same USB device
+            # and makes a later orderly shutdown impossible.
+            return False
         self.context = None
         self.pose_queue = queue.Queue(maxsize=100)
         
