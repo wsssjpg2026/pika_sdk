@@ -213,6 +213,79 @@ def test_native_monitor_reports_successful_global_scene_count_before_map_callbac
         _optical_health_native.release(context_address)
 
 
+def test_native_map_lock_blocks_late_global_scene_application() -> None:
+    """A teleop session map must not be rewritten by a later GSS result."""
+    installer_type = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    )
+    lighthouse_callback_type = ctypes.CFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_void_p
+    )
+    installed_lighthouse_callback = {}
+    forwarded_positions = []
+
+    @lighthouse_callback_type
+    def prior_lighthouse(_context, _index, pose_pointer):
+        pose = ctypes.cast(pose_pointer, ctypes.POINTER(ctypes.c_double * 7))
+        forwarded_positions.append(tuple(pose.contents[:3]))
+
+    installers = [
+        installer_type(lambda _context, _callback: None) for _ in range(3)
+    ]
+
+    @installer_type
+    def install_lighthouse(_context, callback):
+        installed_lighthouse_callback["address"] = callback
+        return ctypes.cast(prior_lighthouse, ctypes.c_void_p).value
+
+    @installer_type
+    def install_log(_context, _callback):
+        return None
+
+    addresses = [
+        ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
+    ]
+    addresses.append(ctypes.cast(install_lighthouse, ctypes.c_void_p).value)
+    addresses.append(ctypes.cast(install_log, ctypes.c_void_p).value)
+    context_address = 0x3456
+
+    _optical_health_native.install(context_address, *addresses)
+    try:
+        lighthouse_callback = lighthouse_callback_type(
+            installed_lighthouse_callback["address"]
+        )
+        initial_pose = (ctypes.c_double * 7)(
+            1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0
+        )
+        lighthouse_callback(
+            context_address,
+            0,
+            ctypes.cast(initial_pose, ctypes.c_void_p),
+        )
+        before = _optical_health_native.scene_snapshot()
+
+        assert _optical_health_native.lock_lighthouse_map()
+
+        refined_pose = (ctypes.c_double * 7)(
+            1.0193, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0
+        )
+        lighthouse_callback(
+            context_address,
+            0,
+            ctypes.cast(refined_pose, ctypes.c_void_p),
+        )
+        after = _optical_health_native.scene_snapshot()
+
+        assert before["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+        assert after["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+        assert after["global_scene_generation"] == before["global_scene_generation"]
+        assert after["lighthouse_map_locked"] is True
+        assert after["suppressed_lighthouse_pose_count"] == 1
+        assert forwarded_positions == [(1.0, 2.0, 3.0)]
+    finally:
+        _optical_health_native.release(context_address)
+
+
 def test_snapshot_uses_sync_receipt_not_fused_pose_timestamp(monkeypatch) -> None:
     monitor = _LibsurviveOpticalHealthMonitor()
     monitor._installed = True

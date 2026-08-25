@@ -185,7 +185,10 @@ class _LibsurviveOpticalHealthMonitor:
             release_context_lock.restype = None
             self._release_context_lock = release_context_lock
             self._close_simple_context = generated.survive_simple_close
-            if not hasattr(native, "seed_lighthouse_pose"):
+            if not all(
+                hasattr(native, name)
+                for name in ("seed_lighthouse_pose", "lock_lighthouse_map")
+            ):
                 raise RuntimeError(
                     "outdated pika optical native extension; reinstall "
                     "agx-pypika to rebuild _optical_health_native"
@@ -319,6 +322,12 @@ class _LibsurviveOpticalHealthMonitor:
         """
         for _name, index, position, rotation in entries:
             self._native.seed_lighthouse_pose(index, position, rotation)
+
+    def lock_global_scene(self):
+        """Freeze the active libsurvive Lighthouse map for a control session."""
+        if not self._installed:
+            return False
+        return bool(self._native.lock_lighthouse_map())
 
     def _reconcile_lighthouse_scene(self):
         """Observe a valid map even when libsurvive suppresses its callback.
@@ -464,6 +473,8 @@ class _LibsurviveOpticalHealthMonitor:
                 "context_epoch": 0,
                 "global_scene_generation": 0,
                 "global_scene_count": 0,
+                "lighthouse_map_locked": False,
+                "suppressed_lighthouse_pose_count": 0,
                 "cached_map_lighthouses": (),
                 "lighthouses": {},
             }
@@ -907,6 +918,10 @@ class ViveTracker:
             scene["tracker_position"] = tuple(float(v) for v in pose.position)
             scene["tracker_rotation"] = tuple(float(v) for v in pose.rotation)
         return scene
+
+    def lock_global_scene(self):
+        """Prevent background GSS refinements from changing this session frame."""
+        return self._optical_health_monitor.lock_global_scene()
     
     def get_device_info(self, device_name=None):
         """

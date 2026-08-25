@@ -397,6 +397,11 @@ class Sense:
             "lighthouses": {},
             "discovered_lighthouses": (),
         }
+
+    def lock_tracker_global_scene(self):
+        """Freeze the active Lighthouse map until the tracker context restarts."""
+        tracker = self.get_vive_tracker()
+        return bool(tracker and tracker.lock_global_scene())
     
     def light_ctrl(self, light_id):
         """

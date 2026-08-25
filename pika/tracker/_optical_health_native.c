@@ -73,6 +73,8 @@ static _Atomic uint64_t installed_context_epoch;
 static _Atomic uint64_t global_scene_generation;
 static _Atomic uint64_t global_scene_count;
 static _Atomic uint64_t pending_global_scene_count;
+static _Atomic bool lighthouse_map_locked;
+static _Atomic uint64_t suppressed_lighthouse_pose_count;
 static atomic_flag lighthouse_scene_write_lock = ATOMIC_FLAG_INIT;
 
 static void store_max(_Atomic uint64_t *target, uint64_t observed) {
@@ -203,6 +205,16 @@ static void optical_health_sweep(SurviveObject *object, survive_channel channel,
 static void optical_health_lighthouse_pose(SurviveContext *context,
                                            uint8_t lighthouse_index,
                                            const SurvivePose *pose) {
+    /* Once a control session accepts a map, its world frame is immutable.
+     * GlobalSceneSolver may keep producing refinements as the Tracker visits
+     * new poses.  Forwarding those callbacks to libsurvive's default handler
+     * rewrites BaseStationData.Pose and therefore shifts every subsequent
+     * Tracker pose underneath an active teleoperation reference. */
+    if (atomic_load_explicit(&lighthouse_map_locked, memory_order_acquire)) {
+        atomic_fetch_add_explicit(&suppressed_lighthouse_pose_count,
+                                  UINT64_C(1), memory_order_relaxed);
+        return;
+    }
     record_lighthouse_pose(lighthouse_index, pose, false);
     /* The INFO line is emitted while an optimization result is being built;
      * publish its scene count only when libsurvive starts delivering the
@@ -250,6 +262,10 @@ static void reset_events(void) {
     atomic_store_explicit(&global_scene_count, UINT64_C(0),
                           memory_order_relaxed);
     atomic_store_explicit(&pending_global_scene_count, UINT64_C(0),
+                          memory_order_relaxed);
+    atomic_store_explicit(&lighthouse_map_locked, false,
+                          memory_order_relaxed);
+    atomic_store_explicit(&suppressed_lighthouse_pose_count, UINT64_C(0),
                           memory_order_relaxed);
     for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
         atomic_store_explicit(&lighthouse_scene[i].timestamp_ns, UINT64_C(0),
@@ -413,6 +429,19 @@ static PyObject *seed_lighthouse_pose(PyObject *self, PyObject *args) {
     Py_RETURN_FALSE;
 }
 
+static PyObject *lock_lighthouse_map(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    if (installed_context == NULL) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "optical health monitor is not installed");
+        return NULL;
+    }
+    atomic_store_explicit(&lighthouse_map_locked, true,
+                          memory_order_release);
+    Py_RETURN_TRUE;
+}
+
 static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
     (void)self;
     (void)args;
@@ -432,24 +461,38 @@ static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
         &global_scene_count, memory_order_acquire);
     uint64_t scene_count = atomic_load_explicit(
         &pending_global_scene_count, memory_order_acquire);
+    bool map_locked = atomic_load_explicit(&lighthouse_map_locked,
+                                           memory_order_acquire);
+    uint64_t suppressed_pose_count = atomic_load_explicit(
+        &suppressed_lighthouse_pose_count, memory_order_acquire);
     PyObject *epoch_value = PyLong_FromUnsignedLongLong(epoch);
     PyObject *generation_value = PyLong_FromUnsignedLongLong(scene_generation);
     PyObject *scene_count_value = PyLong_FromUnsignedLongLong(scene_count);
     PyObject *applied_scene_count_value =
         PyLong_FromUnsignedLongLong(applied_scene_count);
+    PyObject *map_locked_value = PyBool_FromLong(map_locked);
+    PyObject *suppressed_pose_count_value =
+        PyLong_FromUnsignedLongLong(suppressed_pose_count);
     if (epoch_value == NULL || generation_value == NULL ||
         scene_count_value == NULL || applied_scene_count_value == NULL ||
+        map_locked_value == NULL || suppressed_pose_count_value == NULL ||
         PyDict_SetItemString(result, "context_epoch", epoch_value) < 0 ||
         PyDict_SetItemString(result, "global_scene_generation",
                              generation_value) < 0 ||
         PyDict_SetItemString(result, "global_scene_count",
                              scene_count_value) < 0 ||
         PyDict_SetItemString(result, "applied_global_scene_count",
-                             applied_scene_count_value) < 0) {
+                             applied_scene_count_value) < 0 ||
+        PyDict_SetItemString(result, "lighthouse_map_locked",
+                             map_locked_value) < 0 ||
+        PyDict_SetItemString(result, "suppressed_lighthouse_pose_count",
+                             suppressed_pose_count_value) < 0) {
         Py_XDECREF(epoch_value);
         Py_XDECREF(generation_value);
         Py_XDECREF(scene_count_value);
         Py_XDECREF(applied_scene_count_value);
+        Py_XDECREF(map_locked_value);
+        Py_XDECREF(suppressed_pose_count_value);
         Py_DECREF(lighthouses);
         Py_DECREF(result);
         return NULL;
@@ -458,6 +501,8 @@ static PyObject *scene_snapshot(PyObject *self, PyObject *args) {
     Py_DECREF(generation_value);
     Py_DECREF(scene_count_value);
     Py_DECREF(applied_scene_count_value);
+    Py_DECREF(map_locked_value);
+    Py_DECREF(suppressed_pose_count_value);
 
     for (unsigned i = 0; i < LIGHTHOUSE_CAPACITY; ++i) {
         uint64_t timestamp_ns = atomic_load_explicit(
@@ -575,6 +620,8 @@ static PyMethodDef methods[] = {
      "Forget a libsurvive context after it has been destroyed."},
     {"seed_lighthouse_pose", seed_lighthouse_pose, METH_VARARGS,
      "Seed one already-valid Lighthouse pose unless a callback recorded it."},
+    {"lock_lighthouse_map", lock_lighthouse_map, METH_NOARGS,
+     "Freeze the active Lighthouse map until this context is released."},
     {"snapshot", snapshot_monitor, METH_VARARGS,
      "Return raw and decoded optical event snapshots."},
     {"scene_snapshot", scene_snapshot, METH_NOARGS,
