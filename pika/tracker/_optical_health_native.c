@@ -36,6 +36,10 @@ typedef sweep_process_func (*install_sweep_func)(SurviveContext *,
                                                  sweep_process_func);
 typedef void (*lighthouse_pose_process_func)(SurviveContext *, uint8_t,
                                              const SurvivePose *);
+typedef void (*raw_lighthouse_pose_process_func)(SurviveContext *, uint8_t,
+                                                 const SurvivePose *);
+typedef raw_lighthouse_pose_process_func (*install_raw_lighthouse_pose_func)(
+    SurviveContext *, raw_lighthouse_pose_process_func);
 typedef lighthouse_pose_process_func (*install_lighthouse_pose_func)(
     SurviveContext *, lighthouse_pose_process_func);
 typedef void (*log_process_func)(SurviveContext *, int, const char *);
@@ -64,6 +68,7 @@ static _Atomic uint64_t decoded_write_sequence;
 static lightcap_process_func prior_lightcap_process;
 static sync_process_func prior_sync_process;
 static sweep_process_func prior_sweep_process;
+static raw_lighthouse_pose_process_func prior_raw_lighthouse_pose_process;
 static lighthouse_pose_process_func prior_lighthouse_pose_process;
 static log_process_func prior_log_process;
 static SurviveContext *installed_context;
@@ -202,19 +207,31 @@ static void optical_health_sweep(SurviveObject *object, survive_channel channel,
     }
 }
 
-static void optical_health_lighthouse_pose(SurviveContext *context,
-                                           uint8_t lighthouse_index,
-                                           const SurvivePose *pose) {
+static void optical_health_raw_lighthouse_pose(SurviveContext *context,
+                                               uint8_t lighthouse_index,
+                                               const SurvivePose *pose) {
     /* Once a control session accepts a map, its world frame is immutable.
      * GlobalSceneSolver may keep producing refinements as the Tracker visits
-     * new poses.  Forwarding those callbacks to libsurvive's default handler
-     * rewrites BaseStationData.Pose and therefore shifts every subsequent
-     * Tracker pose underneath an active teleoperation reference. */
+     * new poses.  The raw handler is the layer that rewrites
+     * BaseStationData.Pose; the public lighthouse_pose hook runs only after
+     * that mutation, so the lock must gate this raw callback. */
     if (atomic_load_explicit(&lighthouse_map_locked, memory_order_acquire)) {
         atomic_fetch_add_explicit(&suppressed_lighthouse_pose_count,
                                   UINT64_C(1), memory_order_relaxed);
         return;
     }
+    raw_lighthouse_pose_process_func prior = prior_raw_lighthouse_pose_process;
+    if (prior != NULL) {
+        prior(context, lighthouse_index, pose);
+    }
+}
+
+static void optical_health_lighthouse_pose(SurviveContext *context,
+                                           uint8_t lighthouse_index,
+                                           const SurvivePose *pose) {
+    /* The public hook receives libsurvive's floor-adjusted external pose.
+     * Keep it for scene monitoring while the raw hook above owns mutation
+     * control. */
     record_lighthouse_pose(lighthouse_index, pose, false);
     /* The INFO line is emitted while an optimization result is being built;
      * publish its scene count only when libsurvive starts delivering the
@@ -285,12 +302,14 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     unsigned long long lightcap_installer_address = 0;
     unsigned long long sync_installer_address = 0;
     unsigned long long sweep_installer_address = 0;
+    unsigned long long raw_lighthouse_pose_installer_address = 0;
     unsigned long long lighthouse_pose_installer_address = 0;
     unsigned long long log_installer_address = 0;
-    if (!PyArg_ParseTuple(args, "KKKKKK", &context_address,
+    if (!PyArg_ParseTuple(args, "KKKKKKK", &context_address,
                           &lightcap_installer_address,
                           &sync_installer_address,
                           &sweep_installer_address,
+                          &raw_lighthouse_pose_installer_address,
                           &lighthouse_pose_installer_address,
                           &log_installer_address)) {
         return NULL;
@@ -298,6 +317,7 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     if (context_address == 0 || lightcap_installer_address == 0 ||
         sync_installer_address == 0 ||
         sweep_installer_address == 0 ||
+        raw_lighthouse_pose_installer_address == 0 ||
         lighthouse_pose_installer_address == 0 ||
         log_installer_address == 0) {
         PyErr_SetString(PyExc_ValueError,
@@ -316,6 +336,9 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
         (install_sync_func)(uintptr_t)sync_installer_address;
     install_sweep_func sweep_installer =
         (install_sweep_func)(uintptr_t)sweep_installer_address;
+    install_raw_lighthouse_pose_func raw_lighthouse_pose_installer =
+        (install_raw_lighthouse_pose_func)(uintptr_t)
+            raw_lighthouse_pose_installer_address;
     install_lighthouse_pose_func lighthouse_pose_installer =
         (install_lighthouse_pose_func)(uintptr_t)lighthouse_pose_installer_address;
     install_log_func log_installer =
@@ -328,10 +351,14 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
         sweep_installer(context, optical_health_sweep);
     lighthouse_pose_process_func prior_lighthouse_pose =
         lighthouse_pose_installer(context, optical_health_lighthouse_pose);
+    raw_lighthouse_pose_process_func prior_raw_lighthouse_pose =
+        raw_lighthouse_pose_installer(context,
+                                      optical_health_raw_lighthouse_pose);
     log_process_func prior_log = log_installer(context, optical_health_log);
     if (prior_lightcap == optical_health_lightcap ||
         prior_sync == optical_health_sync ||
         prior_sweep == optical_health_sweep ||
+        prior_raw_lighthouse_pose == optical_health_raw_lighthouse_pose ||
         prior_lighthouse_pose == optical_health_lighthouse_pose ||
         prior_log == optical_health_log) {
         PyErr_SetString(PyExc_RuntimeError,
@@ -341,6 +368,7 @@ static PyObject *install_monitor(PyObject *self, PyObject *args) {
     prior_lightcap_process = prior_lightcap;
     prior_sync_process = prior_sync;
     prior_sweep_process = prior_sweep;
+    prior_raw_lighthouse_pose_process = prior_raw_lighthouse_pose;
     prior_lighthouse_pose_process = prior_lighthouse_pose;
     prior_log_process = prior_log;
     installed_context = context;
@@ -374,6 +402,7 @@ static PyObject *release_monitor(PyObject *self, PyObject *args) {
     prior_lightcap_process = NULL;
     prior_sync_process = NULL;
     prior_sweep_process = NULL;
+    prior_raw_lighthouse_pose_process = NULL;
     prior_lighthouse_pose_process = NULL;
     prior_log_process = NULL;
     atomic_store_explicit(&installed_context_epoch, UINT64_C(0),

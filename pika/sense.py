@@ -348,16 +348,13 @@ class Sense:
                 # owner on failure prevents an unreachable live C context.
                 self._vive_tracker = None
             try:
-                from .tracker.vive_tracker import ViveTracker
-                tracker = ViveTracker(
-                    config_path=self._vive_tracker_config,
-                    lh_config=self._vive_tracker_lh,
-                    args=self._vive_tracker_args,
-                    product='sense'
-                )
-                if not tracker.connect():
+                # Keep every production construction path behind the worker
+                # process boundary.  Calling the shared getter is safe while
+                # holding this RLock and prevents restart from silently
+                # downgrading to an in-process libsurvive context.
+                tracker = self.get_vive_tracker()
+                if tracker is None:
                     return False
-                self._vive_tracker = tracker
                 logger.warning("Vive Tracker decoder context restarted")
                 return True
             except Exception as e:

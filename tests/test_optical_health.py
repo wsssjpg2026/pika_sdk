@@ -172,7 +172,7 @@ def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
     )
     installers = [
-        installer_type(lambda _context, _callback: None) for _ in range(5)
+        installer_type(lambda _context, _callback: None) for _ in range(6)
     ]
     addresses = [
         ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
@@ -213,7 +213,7 @@ def test_native_monitor_reports_successful_global_scene_count_before_map_callbac
     installed_lighthouse_callback = {}
 
     installers = [
-        installer_type(lambda _context, _callback: None) for _ in range(3)
+        installer_type(lambda _context, _callback: None) for _ in range(4)
     ]
 
     @installer_type
@@ -275,22 +275,32 @@ def test_native_map_lock_blocks_late_global_scene_application() -> None:
     lighthouse_callback_type = ctypes.CFUNCTYPE(
         None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_void_p
     )
+    installed_raw_lighthouse_callback = {}
     installed_lighthouse_callback = {}
     forwarded_positions = []
 
     @lighthouse_callback_type
-    def prior_lighthouse(_context, _index, pose_pointer):
+    def prior_raw_lighthouse(_context, _index, pose_pointer):
         pose = ctypes.cast(pose_pointer, ctypes.POINTER(ctypes.c_double * 7))
         forwarded_positions.append(tuple(pose.contents[:3]))
+        public_callback = lighthouse_callback_type(
+            installed_lighthouse_callback["address"]
+        )
+        public_callback(_context, _index, pose_pointer)
 
     installers = [
         installer_type(lambda _context, _callback: None) for _ in range(3)
     ]
 
     @installer_type
+    def install_raw_lighthouse(_context, callback):
+        installed_raw_lighthouse_callback["address"] = callback
+        return ctypes.cast(prior_raw_lighthouse, ctypes.c_void_p).value
+
+    @installer_type
     def install_lighthouse(_context, callback):
         installed_lighthouse_callback["address"] = callback
-        return ctypes.cast(prior_lighthouse, ctypes.c_void_p).value
+        return None
 
     @installer_type
     def install_log(_context, _callback):
@@ -299,19 +309,20 @@ def test_native_map_lock_blocks_late_global_scene_application() -> None:
     addresses = [
         ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
     ]
+    addresses.append(ctypes.cast(install_raw_lighthouse, ctypes.c_void_p).value)
     addresses.append(ctypes.cast(install_lighthouse, ctypes.c_void_p).value)
     addresses.append(ctypes.cast(install_log, ctypes.c_void_p).value)
     context_address = 0x3456
 
     _optical_health_native.install(context_address, *addresses)
     try:
-        lighthouse_callback = lighthouse_callback_type(
-            installed_lighthouse_callback["address"]
+        raw_lighthouse_callback = lighthouse_callback_type(
+            installed_raw_lighthouse_callback["address"]
         )
         initial_pose = (ctypes.c_double * 7)(
             1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0
         )
-        lighthouse_callback(
+        raw_lighthouse_callback(
             context_address,
             0,
             ctypes.cast(initial_pose, ctypes.c_void_p),
@@ -323,7 +334,7 @@ def test_native_map_lock_blocks_late_global_scene_application() -> None:
         refined_pose = (ctypes.c_double * 7)(
             1.0193, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0
         )
-        lighthouse_callback(
+        raw_lighthouse_callback(
             context_address,
             0,
             ctypes.cast(refined_pose, ctypes.c_void_p),
@@ -503,10 +514,74 @@ def test_snapshot_uses_libsurvive_lightcap_counter_when_native_raw_hook_is_silen
     observed = monitor.snapshot("T20")
 
     assert baseline["raw_optical_measurement_count"] == 0
-    assert observed["raw_optical_timestamp_s"] == pytest.approx(10.05)
-    assert observed["raw_optical_age_s"] == pytest.approx(0.0)
+    assert observed["raw_optical_timestamp_s"] == pytest.approx(10.00)
+    assert observed["raw_optical_age_s"] == pytest.approx(0.05)
     assert observed["raw_optical_measurement_count"] == 12
     assert observed["raw_optical_event_sequence"] == 112
+
+
+def test_snapshot_keeps_exact_native_raw_time_when_both_sources_advance(
+    monkeypatch,
+) -> None:
+    """The context fallback must not replace a healthy native hook sample."""
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _SequencedNativeMonitor(
+        (
+            (9_990_000_000, 4, 41, 9_990_000_000, 4, 2, 41),
+            (10_040_000_000, 5, 42, 10_040_000_000, 5, 2, 42),
+        )
+    )
+    context = SimpleNamespace(lightcap_call_cnt=100)
+    monitor._full_context = SimpleNamespace(contents=context)
+    monotonic_times = iter((10.00, 10.05))
+    monkeypatch.setattr(
+        "pika.tracker.vive_tracker.time.monotonic",
+        lambda: next(monotonic_times),
+    )
+
+    monitor.snapshot("T20")
+    context.lightcap_call_cnt = 112
+    observed = monitor.snapshot("T20")
+
+    assert observed["raw_optical_timestamp_s"] == pytest.approx(10.04)
+    assert observed["raw_optical_age_s"] == pytest.approx(0.01)
+    assert observed["raw_optical_measurement_count"] == 5
+    assert observed["raw_optical_event_sequence"] == 42
+
+
+def test_snapshot_returns_to_native_sequence_after_fallback_recovers(
+    monkeypatch,
+) -> None:
+    """A temporary fallback must not permanently switch sequence domains."""
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _SequencedNativeMonitor(
+        (
+            (9_990_000_000, 4, 40, 9_990_000_000, 4, 2, 40),
+            (9_990_000_000, 0, 40, 10_040_000_000, 5, 2, 42),
+            (10_090_000_000, 3, 41, 10_090_000_000, 3, 2, 43),
+        )
+    )
+    context = SimpleNamespace(lightcap_call_cnt=100)
+    monitor._full_context = SimpleNamespace(contents=context)
+    monotonic_times = iter((10.00, 10.05, 10.10))
+    monkeypatch.setattr(
+        "pika.tracker.vive_tracker.time.monotonic",
+        lambda: next(monotonic_times),
+    )
+
+    monitor.snapshot("T20")
+    context.lightcap_call_cnt = 112
+    fallback = monitor.snapshot("T20")
+    context.lightcap_call_cnt = 115
+    recovered = monitor.snapshot("T20")
+
+    assert fallback["raw_optical_timestamp_s"] == pytest.approx(10.00)
+    assert fallback["raw_optical_event_sequence"] == 112
+    assert recovered["raw_optical_timestamp_s"] == pytest.approx(10.09)
+    assert recovered["raw_optical_age_s"] == pytest.approx(0.01)
+    assert recovered["raw_optical_event_sequence"] == 41
 
 
 def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
@@ -602,8 +677,9 @@ def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None
     monitor._install_lightcap = ctypes.c_void_p(0x1001)
     monitor._install_sync = ctypes.c_void_p(0x1002)
     monitor._install_sweep = ctypes.c_void_p(0x1003)
-    monitor._install_lighthouse_pose = ctypes.c_void_p(0x1004)
-    monitor._install_log = ctypes.c_void_p(0x1005)
+    monitor._install_raw_lighthouse_pose = ctypes.c_void_p(0x1004)
+    monitor._install_lighthouse_pose = ctypes.c_void_p(0x1005)
+    monitor._install_log = ctypes.c_void_p(0x1006)
     monitor._get_lighthouse_bsd = lambda ptr: bsd_by_ptr.get(ptr)
     monitor._get_floor_offset = lambda _context: 0.0
     monitor._get_context_lock = lambda _context: None
@@ -687,8 +763,9 @@ def test_scene_snapshot_reconciles_map_that_becomes_valid_without_callback() -> 
     monitor._install_lightcap = ctypes.c_void_p(0x2001)
     monitor._install_sync = ctypes.c_void_p(0x2002)
     monitor._install_sweep = ctypes.c_void_p(0x2003)
-    monitor._install_lighthouse_pose = ctypes.c_void_p(0x2004)
-    monitor._install_log = ctypes.c_void_p(0x2005)
+    monitor._install_raw_lighthouse_pose = ctypes.c_void_p(0x2004)
+    monitor._install_lighthouse_pose = ctypes.c_void_p(0x2005)
+    monitor._install_log = ctypes.c_void_p(0x2006)
     monitor._get_lighthouse_bsd = lambda ptr: (
         SimpleNamespace(contents=bsd) if ptr is lighthouse.ptr else None
     )
@@ -817,12 +894,35 @@ def test_sense_restarts_only_the_vive_tracker_context(monkeypatch) -> None:
 
     old_tracker = _OldTracker()
     sense._vive_tracker = old_tracker
-    monkeypatch.setattr("pika.tracker.vive_tracker.ViveTracker", _NewTracker)
+    monkeypatch.setattr(
+        "pika.tracker.process_vive_tracker.IsolatedViveTracker",
+        _NewTracker,
+    )
 
     assert sense.restart_vive_tracker() is True
     assert old_tracker.disconnect_calls == 1
     assert isinstance(sense._vive_tracker, _NewTracker)
     assert sense._vive_tracker.connect_calls == 1
+
+
+def test_sense_restart_without_tracker_starts_isolated_worker(monkeypatch) -> None:
+    sense = Sense(port="/dev/null")
+
+    class _NewTracker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def connect(self):
+            return True
+
+    monkeypatch.setattr(
+        "pika.tracker.process_vive_tracker.IsolatedViveTracker",
+        _NewTracker,
+    )
+
+    assert sense._vive_tracker is None
+    assert sense.restart_vive_tracker() is True
+    assert isinstance(sense._vive_tracker, _NewTracker)
 
 
 def test_sense_restarts_isolated_tracker_worker_in_place() -> None:
@@ -860,7 +960,10 @@ def test_sense_keeps_old_tracker_when_context_shutdown_is_not_clean(
 
     old_tracker = _OldTracker()
     sense._vive_tracker = old_tracker
-    monkeypatch.setattr("pika.tracker.vive_tracker.ViveTracker", _NewTracker)
+    monkeypatch.setattr(
+        "pika.tracker.process_vive_tracker.IsolatedViveTracker",
+        _NewTracker,
+    )
 
     assert sense.restart_vive_tracker() is False
     assert sense._vive_tracker is old_tracker

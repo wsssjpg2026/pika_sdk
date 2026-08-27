@@ -127,6 +127,7 @@ class _LibsurviveOpticalHealthMonitor:
         self._install_lightcap = None
         self._install_sync = None
         self._install_sweep = None
+        self._install_raw_lighthouse_pose = None
         self._install_lighthouse_pose = None
         self._install_log = None
         self._get_lighthouse_bsd = None
@@ -149,6 +150,9 @@ class _LibsurviveOpticalHealthMonitor:
         self._last_context_lightcap_count = None
         self._last_context_raw_timestamp_s = 0.0
         self._context_raw_batches = deque()
+        self._last_context_raw_poll_s = None
+        self._last_native_raw_sequence = None
+        self._context_raw_fallback_active = False
         try:
             from . import _optical_health_native as native
             from pysurvive import pysurvive_generated as generated
@@ -161,6 +165,9 @@ class _LibsurviveOpticalHealthMonitor:
             self._install_lightcap = lib.get("survive_install_lightcap_fn", "cdecl")
             self._install_sync = lib.get("survive_install_sync_fn", "cdecl")
             self._install_sweep = lib.get("survive_install_sweep_fn", "cdecl")
+            self._install_raw_lighthouse_pose = lib.get(
+                "survive_install_raw_lighthouse_pose_fn", "cdecl"
+            )
             self._install_lighthouse_pose = lib.get(
                 "survive_install_lighthouse_pose_fn", "cdecl"
             )
@@ -218,6 +225,7 @@ class _LibsurviveOpticalHealthMonitor:
             and self._install_lightcap is not None
             and self._install_sync is not None
             and self._install_sweep is not None
+            and self._install_raw_lighthouse_pose is not None
             and self._install_lighthouse_pose is not None
             and self._install_log is not None
             and self._get_lighthouse_bsd is not None
@@ -252,6 +260,9 @@ class _LibsurviveOpticalHealthMonitor:
             sweep_installer_address = ctypes.cast(
                 self._install_sweep, ctypes.c_void_p
             ).value
+            raw_lighthouse_pose_installer_address = ctypes.cast(
+                self._install_raw_lighthouse_pose, ctypes.c_void_p
+            ).value
             lighthouse_pose_installer_address = ctypes.cast(
                 self._install_lighthouse_pose, ctypes.c_void_p
             ).value
@@ -263,6 +274,7 @@ class _LibsurviveOpticalHealthMonitor:
                 lightcap_installer_address,
                 installer_address,
                 sweep_installer_address,
+                raw_lighthouse_pose_installer_address,
                 lighthouse_pose_installer_address,
                 log_installer_address,
             )
@@ -414,8 +426,11 @@ class _LibsurviveOpticalHealthMonitor:
             self._last_context_lightcap_count = None
             self._last_context_raw_timestamp_s = 0.0
             self._context_raw_batches.clear()
+            self._last_context_raw_poll_s = None
+            self._last_native_raw_sequence = None
+            self._context_raw_fallback_active = False
 
-    def _context_raw_snapshot(self, now):
+    def _context_raw_snapshot(self, now, native_raw_sequence):
         """Poll libsurvive's own raw-light callback counter.
 
         The counter is updated inside ``SURVIVE_INVOKE_HOOK_SO(lightcap, ...)``
@@ -434,13 +449,43 @@ class _LibsurviveOpticalHealthMonitor:
         with self._context_raw_lock:
             previous = self._last_context_lightcap_count
             self._last_context_lightcap_count = counter
+            previous_poll_s = self._last_context_raw_poll_s
+            self._last_context_raw_poll_s = now
+            context_advanced = False
             if previous is not None:
                 # lightcap_call_cnt is uint32_t in pysurvive's generated ABI.
                 # A lower value denotes a reset, not a four-billion-hit burst.
                 delta = counter - previous if counter >= previous else 0
                 if delta > 0:
-                    self._last_context_raw_timestamp_s = now
-                    self._context_raw_batches.append((now, delta))
+                    context_advanced = True
+                    # The event happened somewhere after the previous poll.
+                    # Use that lower bound rather than ``now`` so the safety
+                    # age is conservatively overestimated, never understated.
+                    event_lower_bound_s = (
+                        previous_poll_s
+                        if previous_poll_s is not None
+                        else now
+                    )
+                    self._last_context_raw_timestamp_s = event_lower_bound_s
+                    self._context_raw_batches.append(
+                        (event_lower_bound_s, delta)
+                    )
+
+            native_raw_sequence = int(native_raw_sequence)
+            previous_native_sequence = self._last_native_raw_sequence
+            native_advanced = (
+                native_raw_sequence > 0
+                if previous_native_sequence is None
+                else native_raw_sequence != previous_native_sequence
+            )
+            self._last_native_raw_sequence = native_raw_sequence
+            if native_advanced:
+                self._context_raw_fallback_active = False
+            elif context_advanced:
+                # Only use the context counter when it proves that the native
+                # lightcap hook missed events.  A healthy native sequence owns
+                # the exact timestamp and sequence domain.
+                self._context_raw_fallback_active = True
             cutoff = now - self._WINDOW_S
             while (
                 self._context_raw_batches
@@ -452,6 +497,7 @@ class _LibsurviveOpticalHealthMonitor:
                 self._last_context_raw_timestamp_s,
                 int(recent_count),
                 counter,
+                self._context_raw_fallback_active,
             )
 
     def snapshot(self, _device_name):
@@ -474,17 +520,18 @@ class _LibsurviveOpticalHealthMonitor:
         ) = snapshot
         now = time.monotonic()
         last_raw_s = raw_latest_ns / 1_000_000_000.0
-        context_raw = self._context_raw_snapshot(now)
+        context_raw = self._context_raw_snapshot(now, raw_event_sequence)
         if context_raw is not None:
-            context_last_raw_s, context_raw_count, context_raw_sequence = (
-                context_raw
-            )
-            if context_last_raw_s >= last_raw_s:
+            (
+                context_last_raw_s,
+                context_raw_count,
+                context_raw_sequence,
+                use_context_fallback,
+            ) = context_raw
+            if use_context_fallback:
                 last_raw_s = context_last_raw_s
                 raw_event_sequence = context_raw_sequence
-            raw_measurement_count = max(
-                int(raw_measurement_count), context_raw_count
-            )
+                raw_measurement_count = context_raw_count
         last_sync_s = latest_ns / 1_000_000_000.0
         has_recent_raw_events = raw_measurement_count > 0
         if has_recent_raw_events != self._had_recent_raw_optical_events:
