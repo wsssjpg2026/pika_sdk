@@ -5,6 +5,8 @@ Vive Tracker module - based on pysurvive library
 Provides access interface for Vive Tracker device pose data
 """
 
+import ctypes
+from collections import deque
 import sys
 import time
 import os
@@ -40,6 +42,20 @@ try:
 except ImportError:
     logger.error("pysurvive library not found, please ensure it is properly installed")
     raise ImportError("pysurvive library not found, please ensure it is properly installed")
+
+
+def _simple_object_name(simple_object):
+    """Return a pysurvive object name as text at the ctypes boundary."""
+    raw_name = simple_object.Name()
+    if isinstance(raw_name, bytes):
+        return raw_name.decode("utf-8")
+    if isinstance(raw_name, str):
+        return raw_name
+    raise TypeError(
+        "pysurvive SimpleObject.Name() returned unsupported type "
+        f"{type(raw_name).__name__}"
+    )
+
 
 class PoseData:
     """Pose data structure for storing and formatting pose information"""
@@ -100,7 +116,10 @@ class _LibsurviveOpticalHealthMonitor:
     libsurvive thread into the Python interpreter.
     """
 
-    _WINDOW_S = 0.1
+    # Diagnostics aggregation window, not a control safety timeout.  Keep
+    # enough history for ordinary Python/libsurvive scheduling jitter;
+    # consumers still enforce safety with the exact ``*_age_s`` fields.
+    _WINDOW_S = 0.3
 
     def __init__(self):
         self._installed = False
@@ -108,12 +127,32 @@ class _LibsurviveOpticalHealthMonitor:
         self._install_lightcap = None
         self._install_sync = None
         self._install_sweep = None
+        self._install_raw_lighthouse_pose = None
         self._install_lighthouse_pose = None
+        self._install_log = None
+        self._get_lighthouse_bsd = None
+        self._get_floor_offset = None
+        self._get_context_lock = None
+        self._release_context_lock = None
         self._close_simple_context = None
         self._native = None
+        self._simple_context = None
+        self._full_context = None
         self._error_reason = None
         self._had_recent_raw_optical_events = None
         self._had_recent_optical_events = None
+        self._cached_map_lighthouses = ()
+        # libsurvive itself increments lightcap_call_cnt around the active
+        # disambiguator callback. Keep this independent observation because
+        # some HTCVive/libsurvive combinations bypass a previously installed
+        # lightcap hook while decoded sync/sweep callbacks remain active.
+        self._context_raw_lock = threading.Lock()
+        self._last_context_lightcap_count = None
+        self._last_context_raw_timestamp_s = 0.0
+        self._context_raw_batches = deque()
+        self._last_context_raw_poll_s = None
+        self._last_native_raw_sequence = None
+        self._context_raw_fallback_active = False
         try:
             from . import _optical_health_native as native
             from pysurvive import pysurvive_generated as generated
@@ -126,10 +165,50 @@ class _LibsurviveOpticalHealthMonitor:
             self._install_lightcap = lib.get("survive_install_lightcap_fn", "cdecl")
             self._install_sync = lib.get("survive_install_sync_fn", "cdecl")
             self._install_sweep = lib.get("survive_install_sweep_fn", "cdecl")
+            self._install_raw_lighthouse_pose = lib.get(
+                "survive_install_raw_lighthouse_pose_fn", "cdecl"
+            )
             self._install_lighthouse_pose = lib.get(
                 "survive_install_lighthouse_pose_fn", "cdecl"
             )
+            self._install_log = lib.get("survive_install_log_fn", "cdecl")
+            get_lighthouse_bsd = lib.get("survive_simple_get_bsd", "cdecl")
+            get_lighthouse_bsd.argtypes = [
+                generated.POINTER(generated.SurviveSimpleObject)
+            ]
+            get_lighthouse_bsd.restype = generated.POINTER(
+                generated.BaseStationData
+            )
+            self._get_lighthouse_bsd = get_lighthouse_bsd
+            get_floor_offset = lib.get("survive_get_floor_offset", "cdecl")
+            get_floor_offset.argtypes = [
+                generated.POINTER(generated.SurviveContext)
+            ]
+            get_floor_offset.restype = ctypes.c_double
+            self._get_floor_offset = get_floor_offset
+            get_context_lock = lib.get("survive_get_ctx_lock", "cdecl")
+            get_context_lock.argtypes = [
+                generated.POINTER(generated.SurviveContext)
+            ]
+            get_context_lock.restype = None
+            self._get_context_lock = get_context_lock
+            release_context_lock = lib.get(
+                "survive_release_ctx_lock", "cdecl"
+            )
+            release_context_lock.argtypes = [
+                generated.POINTER(generated.SurviveContext)
+            ]
+            release_context_lock.restype = None
+            self._release_context_lock = release_context_lock
             self._close_simple_context = generated.survive_simple_close
+            if not all(
+                hasattr(native, name)
+                for name in ("seed_lighthouse_pose", "lock_lighthouse_map")
+            ):
+                raise RuntimeError(
+                    "outdated pika optical native extension; reinstall "
+                    "agx-pypika to rebuild _optical_health_native"
+                )
             self._native = native
         except Exception as exc:
             self._error_reason = str(exc)
@@ -146,7 +225,13 @@ class _LibsurviveOpticalHealthMonitor:
             and self._install_lightcap is not None
             and self._install_sync is not None
             and self._install_sweep is not None
+            and self._install_raw_lighthouse_pose is not None
             and self._install_lighthouse_pose is not None
+            and self._install_log is not None
+            and self._get_lighthouse_bsd is not None
+            and self._get_floor_offset is not None
+            and self._get_context_lock is not None
+            and self._release_context_lock is not None
             and self._close_simple_context is not None
             and self._native is not None
         )
@@ -161,8 +246,10 @@ class _LibsurviveOpticalHealthMonitor:
             full_context = self._get_context(simple_context.ptr)
             if not full_context:
                 return False
-            import ctypes
-
+            cached_scene = self._existing_lighthouse_scene(
+                simple_context,
+                full_context=full_context,
+            )
             context_address = ctypes.cast(full_context, ctypes.c_void_p).value
             lightcap_installer_address = ctypes.cast(
                 self._install_lightcap, ctypes.c_void_p
@@ -173,25 +260,125 @@ class _LibsurviveOpticalHealthMonitor:
             sweep_installer_address = ctypes.cast(
                 self._install_sweep, ctypes.c_void_p
             ).value
+            raw_lighthouse_pose_installer_address = ctypes.cast(
+                self._install_raw_lighthouse_pose, ctypes.c_void_p
+            ).value
             lighthouse_pose_installer_address = ctypes.cast(
                 self._install_lighthouse_pose, ctypes.c_void_p
+            ).value
+            log_installer_address = ctypes.cast(
+                self._install_log, ctypes.c_void_p
             ).value
             self._native.install(
                 context_address,
                 lightcap_installer_address,
                 installer_address,
                 sweep_installer_address,
+                raw_lighthouse_pose_installer_address,
                 lighthouse_pose_installer_address,
+                log_installer_address,
             )
+            self._seed_existing_lighthouse_scene(cached_scene)
+            self._simple_context = simple_context
+            self._full_context = full_context
+            self._reset_context_raw_tracking()
+            cached_lighthouses = tuple(
+                sorted(entry[0] for entry in cached_scene)
+            )
+            self._cached_map_lighthouses = cached_lighthouses
             self._installed = True
             logger.info(
-                "native libsurvive optical + global-scene monitor installed"
+                "native libsurvive optical + global-scene monitor installed; "
+                "cached map at install=%s",
+                cached_lighthouses or "none",
             )
             return True
         except Exception as exc:
             self._error_reason = str(exc)
             logger.error("Failed to install libsurvive optical monitor: %s", exc)
             return False
+
+    def _existing_lighthouse_scene(self, simple_context, *, full_context=None):
+        """Snapshot authoritative cached map entries before installing hooks.
+
+        ``SimpleContext`` loads persisted Lighthouse poses during construction,
+        before this monitor can register its callback.  Only ``PositionSet``
+        entries are authoritative.  ``BaseStationData.Pose`` is in
+        libsurvive's internal frame, whereas the public Lighthouse-pose hook
+        subtracts ``floor_offset`` from Z.  Convert the cached snapshot to that
+        public frame before seeding the native monitor so a later live callback
+        does not look like a map jump.
+        """
+        entries = []
+        locked = False
+        floor_offset_m = 0.0
+        try:
+            if full_context is not None:
+                self._get_context_lock(full_context)
+                locked = True
+                floor_offset_m = float(self._get_floor_offset(full_context))
+            for simple_object in simple_context.Objects():
+                name = _simple_object_name(simple_object)
+                if not name.startswith("LH") or not name[2:].isdigit():
+                    continue
+                bsd_pointer = self._get_lighthouse_bsd(simple_object.ptr)
+                if not bsd_pointer or not bool(bsd_pointer.contents.PositionSet):
+                    continue
+                pose = bsd_pointer.contents.Pose
+                position = [float(value) for value in pose.Pos]
+                position[2] -= floor_offset_m
+                rotation = tuple(float(value) for value in pose.Rot)
+                entries.append((name, int(name[2:]), tuple(position), rotation))
+        finally:
+            if locked:
+                self._release_context_lock(full_context)
+        return tuple(entries)
+
+    def _seed_existing_lighthouse_scene(self, entries):
+        """Copy a pre-install cached snapshot into empty native map slots.
+
+        A live callback can win after the snapshot and before this copy.  The
+        native bridge intentionally preserves that newer callback value; the
+        entry remains classified as cached because its authoritative
+        ``PositionSet`` state was observed before hooks were installed.
+        """
+        for _name, index, position, rotation in entries:
+            self._native.seed_lighthouse_pose(index, position, rotation)
+
+    def lock_global_scene(self):
+        """Freeze the active libsurvive Lighthouse map for a control session."""
+        if not self._installed:
+            return False
+        return bool(self._native.lock_lighthouse_map())
+
+    def _reconcile_lighthouse_scene(self):
+        """Observe a valid map even when libsurvive suppresses its callback.
+
+        ``PositionSet`` and ``Pose`` are authoritative after a successful
+        global solve.  Reconcile only missing native slots so a newer
+        callback-owned map entry is never overwritten.
+        """
+        if self._simple_context is None or self._full_context is None:
+            return
+        current_scene = self._existing_lighthouse_scene(
+            self._simple_context,
+            full_context=self._full_context,
+        )
+        self._seed_existing_lighthouse_scene(current_scene)
+
+    def _needs_lighthouse_scene_reconciliation(self, snapshot):
+        """Return whether a completed solve lacks authoritative map entries."""
+        if self._simple_context is None:
+            return False
+        if int(snapshot.get("global_scene_count", 0) or 0) <= 0:
+            return False
+        expected = set()
+        for simple_object in self._simple_context.Objects():
+            name = _simple_object_name(simple_object)
+            if name.startswith("LH") and name[2:].isdigit():
+                expected.add(name)
+        recorded = set(dict(snapshot.get("lighthouses", {})))
+        return bool(expected - recorded)
 
     @property
     def error_reason(self):
@@ -227,8 +414,91 @@ class _LibsurviveOpticalHealthMonitor:
                 self._native.release(full_context_address)
             if closed:
                 self._installed = False
+                self._simple_context = None
+                self._full_context = None
+                self._reset_context_raw_tracking()
                 self._had_recent_raw_optical_events = None
                 self._had_recent_optical_events = None
+                self._cached_map_lighthouses = ()
+
+    def _reset_context_raw_tracking(self):
+        with self._context_raw_lock:
+            self._last_context_lightcap_count = None
+            self._last_context_raw_timestamp_s = 0.0
+            self._context_raw_batches.clear()
+            self._last_context_raw_poll_s = None
+            self._last_native_raw_sequence = None
+            self._context_raw_fallback_active = False
+
+    def _context_raw_snapshot(self, now, native_raw_sequence):
+        """Poll libsurvive's own raw-light callback counter.
+
+        The counter is updated inside ``SURVIVE_INVOKE_HOOK_SO(lightcap, ...)``
+        regardless of which disambiguator callback is currently installed.
+        A short deque reconstructs the recent-event window without consuming
+        events when multiple service threads poll concurrently.
+        """
+        full_context = self._full_context
+        if full_context is None:
+            return None
+        try:
+            counter = int(full_context.contents.lightcap_call_cnt)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+        with self._context_raw_lock:
+            previous = self._last_context_lightcap_count
+            self._last_context_lightcap_count = counter
+            previous_poll_s = self._last_context_raw_poll_s
+            self._last_context_raw_poll_s = now
+            context_advanced = False
+            if previous is not None:
+                # lightcap_call_cnt is uint32_t in pysurvive's generated ABI.
+                # A lower value denotes a reset, not a four-billion-hit burst.
+                delta = counter - previous if counter >= previous else 0
+                if delta > 0:
+                    context_advanced = True
+                    # The event happened somewhere after the previous poll.
+                    # Use that lower bound rather than ``now`` so the safety
+                    # age is conservatively overestimated, never understated.
+                    event_lower_bound_s = (
+                        previous_poll_s
+                        if previous_poll_s is not None
+                        else now
+                    )
+                    self._last_context_raw_timestamp_s = event_lower_bound_s
+                    self._context_raw_batches.append(
+                        (event_lower_bound_s, delta)
+                    )
+
+            native_raw_sequence = int(native_raw_sequence)
+            previous_native_sequence = self._last_native_raw_sequence
+            native_advanced = (
+                native_raw_sequence > 0
+                if previous_native_sequence is None
+                else native_raw_sequence != previous_native_sequence
+            )
+            self._last_native_raw_sequence = native_raw_sequence
+            if native_advanced:
+                self._context_raw_fallback_active = False
+            elif context_advanced:
+                # Only use the context counter when it proves that the native
+                # lightcap hook missed events.  A healthy native sequence owns
+                # the exact timestamp and sequence domain.
+                self._context_raw_fallback_active = True
+            cutoff = now - self._WINDOW_S
+            while (
+                self._context_raw_batches
+                and self._context_raw_batches[0][0] < cutoff
+            ):
+                self._context_raw_batches.popleft()
+            recent_count = sum(batch[1] for batch in self._context_raw_batches)
+            return (
+                self._last_context_raw_timestamp_s,
+                int(recent_count),
+                counter,
+                self._context_raw_fallback_active,
+            )
 
     def snapshot(self, _device_name):
         if not self._installed:
@@ -250,6 +520,18 @@ class _LibsurviveOpticalHealthMonitor:
         ) = snapshot
         now = time.monotonic()
         last_raw_s = raw_latest_ns / 1_000_000_000.0
+        context_raw = self._context_raw_snapshot(now, raw_event_sequence)
+        if context_raw is not None:
+            (
+                context_last_raw_s,
+                context_raw_count,
+                context_raw_sequence,
+                use_context_fallback,
+            ) = context_raw
+            if use_context_fallback:
+                last_raw_s = context_last_raw_s
+                raw_event_sequence = context_raw_sequence
+                raw_measurement_count = context_raw_count
         last_sync_s = latest_ns / 1_000_000_000.0
         has_recent_raw_events = raw_measurement_count > 0
         if has_recent_raw_events != self._had_recent_raw_optical_events:
@@ -304,14 +586,27 @@ class _LibsurviveOpticalHealthMonitor:
                 or "native libsurvive monitor is not installed",
                 "context_epoch": 0,
                 "global_scene_generation": 0,
+                "global_scene_count": 0,
+                "lighthouse_map_locked": False,
+                "suppressed_lighthouse_pose_count": 0,
+                "cached_map_lighthouses": (),
                 "lighthouses": {},
             }
         snapshot = self._native.scene_snapshot()
+        if self._needs_lighthouse_scene_reconciliation(snapshot):
+            self._reconcile_lighthouse_scene()
+            snapshot = self._native.scene_snapshot()
         if not isinstance(snapshot, dict):
             raise RuntimeError(
                 "outdated pika optical native extension; reinstall agx-pypika "
                 "to rebuild _optical_health_native"
             )
+        if "global_scene_count" not in snapshot:
+            raise RuntimeError(
+                "outdated pika optical native extension; reinstall agx-pypika "
+                "to expose global_scene_count"
+            )
+        snapshot["cached_map_lighthouses"] = self._cached_map_lighthouses
         snapshot["bridge_available"] = True
         snapshot["bridge_error"] = None
         return snapshot
@@ -454,6 +749,29 @@ class ViveTracker:
             
         if self.device_monitor_thread:
             self.device_monitor_thread.join(timeout=2.0)
+
+        # ``survive_simple_close`` destroys memory that the workers access
+        # through ``self.context``.  A timed-out join is not permission to
+        # proceed: the collector can still be inside ``NextUpdated()`` while
+        # libsurvive is being torn down, which can deadlock the native close
+        # path.  Fail closed and preserve the tracker/context owner so the
+        # process can be restarted cleanly by its supervisor.
+        live_workers = [
+            name
+            for name, worker in (
+                ("collector", self.collector_thread),
+                ("processor", self.processor_thread),
+                ("device-monitor", self.device_monitor_thread),
+            )
+            if worker is not None and worker.is_alive()
+        ]
+        if live_workers:
+            logger.error(
+                "Refusing to destroy libsurvive context while worker threads "
+                "are still alive: %s",
+                ", ".join(live_workers),
+            )
+            return False
         
         # Stop libsurvive's own thread and destroy the native context.  The
         # upstream Python wrapper does not expose this in SimpleContext, so a
@@ -467,6 +785,11 @@ class ViveTracker:
             except Exception as exc:
                 logger.error("Failed to close libsurvive context: %s", exc)
                 context_closed = False
+        if not context_closed:
+            # Retain ownership of the live/unknown native context.  Creating
+            # a replacement alongside it can contend for the same USB device
+            # and makes a later orderly shutdown impossible.
+            return False
         self.context = None
         self.pose_queue = queue.Queue(maxsize=100)
         
@@ -516,7 +839,7 @@ class ViveTracker:
             # Update device info dictionary
             with self.data_lock:
                 for device in devices:
-                    device_name = str(device.Name(), 'utf-8')
+                    device_name = _simple_object_name(device)
                     if device_name not in self.devices_info:
                         logger.info(f"Detected new device: {device_name}")
                         self.devices_info[device_name] = {"updates": 0, "last_update": 0}
@@ -541,7 +864,7 @@ class ViveTracker:
             logger.info(f"Detected {len(devices)} device(s):")
             with self.data_lock:
                 for device in devices:
-                    device_name = str(device.Name(), 'utf-8')
+                    device_name = _simple_object_name(device)
                     logger.info(f"  - {device_name}")
                     if device_name not in self.devices_info:
                         self.devices_info[device_name] = {
@@ -559,7 +882,7 @@ class ViveTracker:
             updated = self.context.NextUpdated()
             if updated:
                 # Get device name
-                device_name = str(updated.Name(), 'utf-8')
+                device_name = _simple_object_name(updated)
                 
                 # If new device, add to device info dictionary
                 with self.data_lock:
@@ -698,6 +1021,13 @@ class ViveTracker:
         """
         self._update_device_list()
         scene = self._optical_health_monitor.scene_snapshot()
+        # Optical events are independent of fused pose callbacks.  A tracker
+        # can remain perfectly still while its photodiodes continue receiving
+        # Lighthouse sweeps, so health must be sampled at query time instead
+        # of being copied from the last cached PoseData object.
+        optical = self._optical_health_monitor.snapshot(device_name)
+        if optical is not None:
+            scene.update(optical)
         with self.data_lock:
             discovered = tuple(
                 sorted(name for name in self.devices_info if name.startswith("LH"))
@@ -725,24 +1055,15 @@ class ViveTracker:
             }
         )
         if pose is not None:
-            for field in (
-                "raw_optical_timestamp_s",
-                "raw_optical_age_s",
-                "raw_optical_measurement_count",
-                "raw_optical_event_sequence",
-                "optical_timestamp_s",
-                "optical_age_s",
-                "optical_measurement_count",
-                "optical_lighthouse_count",
-                "optical_event_sequence",
-                "pose_confidence",
-            ):
-                scene[field] = getattr(pose, field, None)
             scene["tracker_device"] = pose.device_name
             scene["tracker_pose_timestamp_s"] = pose.timestamp
             scene["tracker_position"] = tuple(float(v) for v in pose.position)
             scene["tracker_rotation"] = tuple(float(v) for v in pose.rotation)
         return scene
+
+    def lock_global_scene(self):
+        """Prevent background GSS refinements from changing this session frame."""
+        return self._optical_health_monitor.lock_global_scene()
     
     def get_device_info(self, device_name=None):
         """

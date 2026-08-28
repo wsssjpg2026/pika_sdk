@@ -1,11 +1,21 @@
 """Hardware-free checks for libsurvive optical-sync health monitoring."""
 
 import ctypes
+import multiprocessing
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from pika.sense import Sense
-from pika.tracker.vive_tracker import _LibsurviveOpticalHealthMonitor
+from pika.tracker import _optical_health_native
+from pika.tracker.process_vive_tracker import IsolatedViveTracker
+from pika.tracker.vive_tracker import (
+    PoseData,
+    ViveTracker,
+    _LibsurviveOpticalHealthMonitor,
+)
 
 
 class _FakeNativeMonitor:
@@ -19,6 +29,7 @@ class _FakeNativeMonitor:
         return {
             "context_epoch": 3,
             "global_scene_generation": 7,
+            "global_scene_count": 4,
             "lighthouses": {
                 "LH0": {
                     "timestamp_s": 10.0,
@@ -38,6 +49,308 @@ class _SequencedNativeMonitor:
         return next(self._snapshots)
 
 
+class _LiveHealthMonitor:
+    def __init__(self):
+        self._sequence = 100
+
+    def scene_snapshot(self):
+        return {
+            "context_epoch": 1,
+            "global_scene_generation": 2,
+            "global_scene_count": 0,
+            "lighthouses": {},
+        }
+
+    def snapshot(self, _device_name):
+        self._sequence += 1
+        return {
+            "raw_optical_timestamp_s": 1.0,
+            "raw_optical_age_s": 0.0,
+            "raw_optical_measurement_count": 8,
+            "raw_optical_event_sequence": self._sequence,
+            "optical_timestamp_s": 1.0,
+            "optical_age_s": 0.0,
+            "optical_measurement_count": 8,
+            "optical_lighthouse_count": 2,
+            "optical_event_sequence": self._sequence,
+            "pose_confidence": None,
+        }
+
+
+class _BackendWithHungNativeClose:
+    """Minimal child backend whose native-style shutdown never returns."""
+
+    def __init__(self, **_kwargs):
+        self.connected = False
+
+    def connect(self):
+        self.connected = True
+        return True
+
+    def disconnect(self):
+        while True:
+            time.sleep(1.0)
+
+    def get_devices(self):
+        return ["LH0", "LH1", "T20"]
+
+    def get_pose(self, _device_name=None):
+        return None
+
+    def get_tracking_health(self, _device_name=None):
+        return {"bridge_available": True}
+
+    def lock_global_scene(self):
+        return True
+
+
+def test_isolated_tracker_restart_kills_hung_native_context() -> None:
+    """A stuck native close must not make tracker recovery permanently LOST."""
+    tracker = IsolatedViveTracker(
+        backend_factory=_BackendWithHungNativeClose,
+        process_context=multiprocessing.get_context("spawn"),
+        shutdown_grace_s=0.05,
+        startup_timeout_s=1.0,
+    )
+    try:
+        assert tracker.connect() is True
+        first_pid = tracker.worker_pid
+
+        started = time.monotonic()
+        assert tracker.restart() is True
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert tracker.worker_pid is not None
+        assert tracker.worker_pid != first_pid
+        assert tracker.get_devices() == ["LH0", "LH1", "T20"]
+    finally:
+        tracker.disconnect()
+
+
+def test_cached_lighthouse_scene_uses_live_callback_coordinate_frame() -> None:
+    """Cached BSD poses must match libsurvive's floor-adjusted callback poses."""
+    monitor = _LibsurviveOpticalHealthMonitor.__new__(
+        _LibsurviveOpticalHealthMonitor
+    )
+    monitor._get_context_lock = lambda _context: None
+    monitor._release_context_lock = lambda _context: None
+    monitor._get_floor_offset = lambda _context: -0.237354561687
+    cached_pose = SimpleNamespace(
+        Pos=(1.0, 2.0, 3.0),
+        Rot=(1.0, 0.0, 0.0, 0.0),
+    )
+    cached_bsd = SimpleNamespace(
+        contents=SimpleNamespace(PositionSet=1, Pose=cached_pose)
+    )
+    monitor._get_lighthouse_bsd = lambda _ptr: cached_bsd
+
+    lighthouse = SimpleNamespace(Name=lambda: b"LH1", ptr=object())
+    simple_context = SimpleNamespace(Objects=lambda: (lighthouse,))
+
+    scene = monitor._existing_lighthouse_scene(
+        simple_context,
+        full_context=object(),
+    )
+
+    # survive_default_raw_lighthouse_pose_process publishes BSD.Pose with
+    # external_pose.Pos[2] -= ctx->floor_offset.  The cached seed must use the
+    # same frame or readiness reports a false 237.4 mm map change.
+    assert scene == (
+        (
+            "LH1",
+            1,
+            pytest.approx((1.0, 2.0, 3.237354561687)),
+            (1.0, 0.0, 0.0, 0.0),
+        ),
+    )
+
+
+def test_native_seed_fills_only_a_missing_lighthouse_scene_slot() -> None:
+    """The native bridge must preserve any newer callback-owned map entry."""
+    installer_type = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    )
+    installers = [
+        installer_type(lambda _context, _callback: None) for _ in range(6)
+    ]
+    addresses = [
+        ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
+    ]
+    context_address = 0x1234
+    _optical_health_native.install(context_address, *addresses)
+    try:
+        assert _optical_health_native.seed_lighthouse_pose(
+            0,
+            (1.0, 2.0, 3.0),
+            (1.0, 0.0, 0.0, 0.0),
+        )
+        assert not _optical_health_native.seed_lighthouse_pose(
+            0,
+            (9.0, 9.0, 9.0),
+            (0.5, 0.5, 0.5, 0.5),
+        )
+
+        scene = _optical_health_native.scene_snapshot()
+        assert scene["global_scene_generation"] == 1
+        assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+    finally:
+        _optical_health_native.release(context_address)
+
+
+def test_native_monitor_reports_successful_global_scene_count_before_map_callback() -> None:
+    """GSS progress must not disappear while map application is still pending."""
+    installer_type = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    )
+    log_callback_type = ctypes.CFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p
+    )
+    lighthouse_callback_type = ctypes.CFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_void_p
+    )
+    installed_log_callback = {}
+    installed_lighthouse_callback = {}
+
+    installers = [
+        installer_type(lambda _context, _callback: None) for _ in range(4)
+    ]
+
+    @installer_type
+    def install_lighthouse(_context, callback):
+        installed_lighthouse_callback["address"] = callback
+        return None
+
+    @installer_type
+    def install_log(_context, callback):
+        installed_log_callback["address"] = callback
+        return None
+
+    addresses = [
+        ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
+    ]
+    addresses.append(ctypes.cast(install_lighthouse, ctypes.c_void_p).value)
+    addresses.append(ctypes.cast(install_log, ctypes.c_void_p).value)
+    context_address = 0x2345
+
+    _optical_health_native.install(context_address, *addresses)
+    try:
+        callback = log_callback_type(installed_log_callback["address"])
+        callback(
+            context_address,
+            2,
+            b"Global solve with 3 scenes for 0 with error of 1.0/0.1",
+        )
+        callback(
+            context_address,
+            2,
+            b"Global solve with 4 scenes for 1 with error of 1.0/0.1",
+        )
+        pending = _optical_health_native.scene_snapshot()
+        assert pending["global_scene_count"] == 4
+        assert pending["applied_global_scene_count"] == 0
+
+        lighthouse_callback = lighthouse_callback_type(
+            installed_lighthouse_callback["address"]
+        )
+        pose = (ctypes.c_double * 7)(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        lighthouse_callback(
+            context_address,
+            0,
+            ctypes.cast(pose, ctypes.c_void_p),
+        )
+
+        scene = _optical_health_native.scene_snapshot()
+        assert scene["global_scene_count"] == 4
+        assert scene["applied_global_scene_count"] == 4
+    finally:
+        _optical_health_native.release(context_address)
+
+
+def test_native_map_lock_blocks_late_global_scene_application() -> None:
+    """A teleop session map must not be rewritten by a later GSS result."""
+    installer_type = ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+    )
+    lighthouse_callback_type = ctypes.CFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_void_p
+    )
+    installed_raw_lighthouse_callback = {}
+    installed_lighthouse_callback = {}
+    forwarded_positions = []
+
+    @lighthouse_callback_type
+    def prior_raw_lighthouse(_context, _index, pose_pointer):
+        pose = ctypes.cast(pose_pointer, ctypes.POINTER(ctypes.c_double * 7))
+        forwarded_positions.append(tuple(pose.contents[:3]))
+        public_callback = lighthouse_callback_type(
+            installed_lighthouse_callback["address"]
+        )
+        public_callback(_context, _index, pose_pointer)
+
+    installers = [
+        installer_type(lambda _context, _callback: None) for _ in range(3)
+    ]
+
+    @installer_type
+    def install_raw_lighthouse(_context, callback):
+        installed_raw_lighthouse_callback["address"] = callback
+        return ctypes.cast(prior_raw_lighthouse, ctypes.c_void_p).value
+
+    @installer_type
+    def install_lighthouse(_context, callback):
+        installed_lighthouse_callback["address"] = callback
+        return None
+
+    @installer_type
+    def install_log(_context, _callback):
+        return None
+
+    addresses = [
+        ctypes.cast(installer, ctypes.c_void_p).value for installer in installers
+    ]
+    addresses.append(ctypes.cast(install_raw_lighthouse, ctypes.c_void_p).value)
+    addresses.append(ctypes.cast(install_lighthouse, ctypes.c_void_p).value)
+    addresses.append(ctypes.cast(install_log, ctypes.c_void_p).value)
+    context_address = 0x3456
+
+    _optical_health_native.install(context_address, *addresses)
+    try:
+        raw_lighthouse_callback = lighthouse_callback_type(
+            installed_raw_lighthouse_callback["address"]
+        )
+        initial_pose = (ctypes.c_double * 7)(
+            1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0
+        )
+        raw_lighthouse_callback(
+            context_address,
+            0,
+            ctypes.cast(initial_pose, ctypes.c_void_p),
+        )
+        before = _optical_health_native.scene_snapshot()
+
+        assert _optical_health_native.lock_lighthouse_map()
+
+        refined_pose = (ctypes.c_double * 7)(
+            1.0193, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0
+        )
+        raw_lighthouse_callback(
+            context_address,
+            0,
+            ctypes.cast(refined_pose, ctypes.c_void_p),
+        )
+        after = _optical_health_native.scene_snapshot()
+
+        assert before["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+        assert after["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+        assert after["global_scene_generation"] == before["global_scene_generation"]
+        assert after["lighthouse_map_locked"] is True
+        assert after["suppressed_lighthouse_pose_count"] == 1
+        assert forwarded_positions == [(1.0, 2.0, 3.0)]
+    finally:
+        _optical_health_native.release(context_address)
+
+
 def test_snapshot_uses_sync_receipt_not_fused_pose_timestamp(monkeypatch) -> None:
     monitor = _LibsurviveOpticalHealthMonitor()
     monitor._installed = True
@@ -54,6 +367,33 @@ def test_snapshot_uses_sync_receipt_not_fused_pose_timestamp(monkeypatch) -> Non
     assert health["optical_measurement_count"] == 3
     assert health["optical_lighthouse_count"] == 2
     assert health["pose_confidence"] is None
+
+
+def test_recent_optical_window_tolerates_normal_scheduler_jitter(
+    monkeypatch,
+) -> None:
+    """A 100 ms scheduling gap must not erase otherwise recent visibility."""
+
+    class _WindowRecordingMonitor(_FakeNativeMonitor):
+        def __init__(self, snapshot):
+            super().__init__(snapshot)
+            self.window_s = None
+
+        def snapshot(self, window_s):
+            self.window_s = window_s
+            return super().snapshot(window_s)
+
+    native = _WindowRecordingMonitor(
+        (10_090_000_000, 4, 10, 10_080_000_000, 3, 2, 9)
+    )
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = native
+    monkeypatch.setattr("pika.tracker.vive_tracker.time.monotonic", lambda: 10.10)
+
+    monitor.snapshot("T20")
+
+    assert native.window_s == pytest.approx(0.3)
 
 
 def test_snapshot_reports_explicit_stale_health_when_optical_events_stop(
@@ -142,6 +482,108 @@ def test_snapshot_distinguishes_raw_reacquisition_from_decoded_tracking(
     assert health["optical_event_sequence"] == 27
 
 
+def test_snapshot_uses_libsurvive_lightcap_counter_when_native_raw_hook_is_silent(
+    monkeypatch,
+) -> None:
+    """The context counter must cover a lightcap hook that receives no calls.
+
+    The deployed libsurvive trace had hundreds of decoded sync/sweep events
+    while the native bridge reported raw_measurements=0 for the entire
+    session.  SurviveContext.lightcap_call_cnt is maintained by libsurvive
+    around whichever disambiguator callback is actually installed, so it is
+    the authoritative fallback for physical photodiode activity.
+    """
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _SequencedNativeMonitor(
+        (
+            (0, 0, 0, 10_000_000_000, 8, 2, 10),
+            (0, 0, 0, 10_050_000_000, 8, 2, 18),
+        )
+    )
+    context = SimpleNamespace(lightcap_call_cnt=100)
+    monitor._full_context = SimpleNamespace(contents=context)
+    monotonic_times = iter((10.00, 10.05))
+    monkeypatch.setattr(
+        "pika.tracker.vive_tracker.time.monotonic",
+        lambda: next(monotonic_times),
+    )
+
+    baseline = monitor.snapshot("T20")
+    context.lightcap_call_cnt = 112
+    observed = monitor.snapshot("T20")
+
+    assert baseline["raw_optical_measurement_count"] == 0
+    assert observed["raw_optical_timestamp_s"] == pytest.approx(10.00)
+    assert observed["raw_optical_age_s"] == pytest.approx(0.05)
+    assert observed["raw_optical_measurement_count"] == 12
+    assert observed["raw_optical_event_sequence"] == 112
+
+
+def test_snapshot_keeps_exact_native_raw_time_when_both_sources_advance(
+    monkeypatch,
+) -> None:
+    """The context fallback must not replace a healthy native hook sample."""
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _SequencedNativeMonitor(
+        (
+            (9_990_000_000, 4, 41, 9_990_000_000, 4, 2, 41),
+            (10_040_000_000, 5, 42, 10_040_000_000, 5, 2, 42),
+        )
+    )
+    context = SimpleNamespace(lightcap_call_cnt=100)
+    monitor._full_context = SimpleNamespace(contents=context)
+    monotonic_times = iter((10.00, 10.05))
+    monkeypatch.setattr(
+        "pika.tracker.vive_tracker.time.monotonic",
+        lambda: next(monotonic_times),
+    )
+
+    monitor.snapshot("T20")
+    context.lightcap_call_cnt = 112
+    observed = monitor.snapshot("T20")
+
+    assert observed["raw_optical_timestamp_s"] == pytest.approx(10.04)
+    assert observed["raw_optical_age_s"] == pytest.approx(0.01)
+    assert observed["raw_optical_measurement_count"] == 5
+    assert observed["raw_optical_event_sequence"] == 42
+
+
+def test_snapshot_returns_to_native_sequence_after_fallback_recovers(
+    monkeypatch,
+) -> None:
+    """A temporary fallback must not permanently switch sequence domains."""
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._installed = True
+    monitor._native = _SequencedNativeMonitor(
+        (
+            (9_990_000_000, 4, 40, 9_990_000_000, 4, 2, 40),
+            (9_990_000_000, 0, 40, 10_040_000_000, 5, 2, 42),
+            (10_090_000_000, 3, 41, 10_090_000_000, 3, 2, 43),
+        )
+    )
+    context = SimpleNamespace(lightcap_call_cnt=100)
+    monitor._full_context = SimpleNamespace(contents=context)
+    monotonic_times = iter((10.00, 10.05, 10.10))
+    monkeypatch.setattr(
+        "pika.tracker.vive_tracker.time.monotonic",
+        lambda: next(monotonic_times),
+    )
+
+    monitor.snapshot("T20")
+    context.lightcap_call_cnt = 112
+    fallback = monitor.snapshot("T20")
+    context.lightcap_call_cnt = 115
+    recovered = monitor.snapshot("T20")
+
+    assert fallback["raw_optical_timestamp_s"] == pytest.approx(10.00)
+    assert fallback["raw_optical_event_sequence"] == 112
+    assert recovered["raw_optical_timestamp_s"] == pytest.approx(10.09)
+    assert recovered["raw_optical_age_s"] == pytest.approx(0.01)
+    assert recovered["raw_optical_event_sequence"] == 41
+
+
 def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
     monitor = _LibsurviveOpticalHealthMonitor()
     monitor._installed = True
@@ -152,6 +594,203 @@ def test_scene_snapshot_exposes_context_and_solved_lighthouse_facts() -> None:
     assert scene["bridge_available"] is True
     assert scene["context_epoch"] == 3
     assert scene["global_scene_generation"] == 7
+    assert scene["global_scene_count"] == 4
+    assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
+
+
+def test_install_seeds_preloaded_lighthouse_map_without_a_new_callback() -> None:
+    """A cached valid map must not depend on a post-install pose callback."""
+
+    class _Object:
+        def __init__(self, name):
+            self.ptr = object()
+            self._name = name
+
+        def Name(self):
+            # pysurvive declares this C API as ``c_char_p`` and therefore
+            # returns bytes at the real integration boundary.
+            return self._name.encode("utf-8")
+
+    class _Native:
+        def __init__(self):
+            # Simulate a live callback winning the race between native hook
+            # installation and cached BSD seeding for LH0.
+            self.generation = 1
+            self.lighthouses = {
+                "LH0": {
+                    "timestamp_s": 10.0,
+                    "generation": 1,
+                    "position": (9.0, 9.0, 9.0),
+                    "rotation": (1.0, 0.0, 0.0, 0.0),
+                }
+            }
+
+        def install(self, *_addresses):
+            return True
+
+        def seed_lighthouse_pose(self, index, position, rotation):
+            name = f"LH{index}"
+            if name in self.lighthouses:
+                return False
+            self.generation += 1
+            self.lighthouses[name] = {
+                "timestamp_s": 10.0,
+                "generation": self.generation,
+                "position": tuple(position),
+                "rotation": tuple(rotation),
+            }
+            return True
+
+        def scene_snapshot(self):
+            return {
+                "context_epoch": 1,
+                "global_scene_generation": self.generation,
+                "global_scene_count": 0,
+                "lighthouses": dict(self.lighthouses),
+            }
+
+    lh0 = _Object("LH0")
+    lh1 = _Object("LH1")
+    lh2_unsolved = _Object("LH2")
+    tracker = _Object("T20")
+
+    def _bsd(position, rotation, *, valid=True):
+        return SimpleNamespace(
+            contents=SimpleNamespace(
+                PositionSet=int(valid),
+                Pose=SimpleNamespace(Pos=position, Rot=rotation),
+            )
+        )
+
+    bsd_by_ptr = {
+        lh0.ptr: _bsd((1.0, 2.0, 3.0), (1.0, 0.0, 0.0, 0.0)),
+        lh1.ptr: _bsd((-1.0, 0.5, 2.0), (0.5, 0.5, 0.5, 0.5)),
+        lh2_unsolved.ptr: _bsd(
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0),
+            valid=False,
+        ),
+    }
+    native = _Native()
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._get_context = lambda _ptr: ctypes.c_void_p(0x1000)
+    monitor._install_lightcap = ctypes.c_void_p(0x1001)
+    monitor._install_sync = ctypes.c_void_p(0x1002)
+    monitor._install_sweep = ctypes.c_void_p(0x1003)
+    monitor._install_raw_lighthouse_pose = ctypes.c_void_p(0x1004)
+    monitor._install_lighthouse_pose = ctypes.c_void_p(0x1005)
+    monitor._install_log = ctypes.c_void_p(0x1006)
+    monitor._get_lighthouse_bsd = lambda ptr: bsd_by_ptr.get(ptr)
+    monitor._get_floor_offset = lambda _context: 0.0
+    monitor._get_context_lock = lambda _context: None
+    monitor._release_context_lock = lambda _context: None
+    monitor._close_simple_context = lambda _ptr: None
+    monitor._native = native
+    context = type(
+        "Context",
+        (),
+        {
+            "ptr": object(),
+            "Objects": lambda _self: [lh0, lh1, lh2_unsolved, tracker],
+        },
+    )()
+
+    assert monitor.install(context) is True
+
+    scene = monitor.scene_snapshot()
+    assert scene["global_scene_generation"] == 2
+    assert scene["global_scene_count"] == 0
+    assert scene["cached_map_lighthouses"] == ("LH0", "LH1")
+    assert scene["lighthouses"]["LH0"]["position"] == (9.0, 9.0, 9.0)
+    assert set(scene["lighthouses"]) == {"LH0", "LH1"}
+    assert scene["lighthouses"]["LH1"]["rotation"] == (0.5, 0.5, 0.5, 0.5)
+
+
+def test_scene_snapshot_reconciles_map_that_becomes_valid_without_callback() -> None:
+    """A delayed PositionSet update must not leave readiness at solved=[]."""
+
+    class _Object:
+        def __init__(self, name):
+            self.ptr = object()
+            self._name = name
+
+        def Name(self):
+            # Match the bytes returned by the real pysurvive wrapper.
+            return self._name.encode("utf-8")
+
+    class _Native:
+        def __init__(self):
+            self.generation = 0
+            self.lighthouses = {}
+
+        def install(self, *_addresses):
+            return True
+
+        def seed_lighthouse_pose(self, index, position, rotation):
+            name = f"LH{index}"
+            if name in self.lighthouses:
+                return False
+            self.generation += 1
+            self.lighthouses[name] = {
+                "timestamp_s": 10.0,
+                "generation": self.generation,
+                "position": tuple(position),
+                "rotation": tuple(rotation),
+            }
+            return True
+
+        def scene_snapshot(self):
+            return {
+                "context_epoch": 1,
+                "global_scene_generation": self.generation,
+                "global_scene_count": 3,
+                "applied_global_scene_count": 0,
+                "lighthouses": dict(self.lighthouses),
+            }
+
+    lighthouse = _Object("LH0")
+    tracker = _Object("T20")
+    bsd = SimpleNamespace(
+        PositionSet=0,
+        Pose=SimpleNamespace(
+            Pos=(1.0, 2.0, 3.0),
+            Rot=(1.0, 0.0, 0.0, 0.0),
+        ),
+    )
+    native = _Native()
+    monitor = _LibsurviveOpticalHealthMonitor()
+    monitor._get_context = lambda _ptr: ctypes.c_void_p(0x2000)
+    monitor._install_lightcap = ctypes.c_void_p(0x2001)
+    monitor._install_sync = ctypes.c_void_p(0x2002)
+    monitor._install_sweep = ctypes.c_void_p(0x2003)
+    monitor._install_raw_lighthouse_pose = ctypes.c_void_p(0x2004)
+    monitor._install_lighthouse_pose = ctypes.c_void_p(0x2005)
+    monitor._install_log = ctypes.c_void_p(0x2006)
+    monitor._get_lighthouse_bsd = lambda ptr: (
+        SimpleNamespace(contents=bsd) if ptr is lighthouse.ptr else None
+    )
+    monitor._get_floor_offset = lambda _context: 0.0
+    monitor._get_context_lock = lambda _context: None
+    monitor._release_context_lock = lambda _context: None
+    monitor._close_simple_context = lambda _ptr: None
+    monitor._native = native
+    context = type(
+        "Context",
+        (),
+        {
+            "ptr": object(),
+            "Objects": lambda _self: [lighthouse, tracker],
+        },
+    )()
+
+    assert monitor.install(context) is True
+    assert monitor.scene_snapshot()["lighthouses"] == {}
+
+    bsd.PositionSet = 1
+    scene = monitor.scene_snapshot()
+
+    assert scene["global_scene_count"] == 3
+    assert scene["cached_map_lighthouses"] == ()
     assert scene["lighthouses"]["LH0"]["position"] == (1.0, 2.0, 3.0)
 
 
@@ -165,6 +804,46 @@ def test_scene_snapshot_fails_closed_when_native_bridge_is_not_installed() -> No
     assert scene["bridge_available"] is False
     assert scene["bridge_error"] == "missing required hook"
     assert scene["context_epoch"] == 0
+
+
+def test_tracking_health_refreshes_optical_facts_without_a_new_pose() -> None:
+    """Health queries must not reuse optical facts frozen in cached PoseData."""
+    tracker = ViveTracker.__new__(ViveTracker)
+    tracker._update_device_list = lambda: None
+    tracker._optical_health_monitor = _LiveHealthMonitor()
+    tracker.data_lock = threading.Lock()
+    tracker.devices_info = {"LH0": {}, "LH1": {}, "T20": {}}
+    tracker._lighthouse_discovered_at = {"LH0": 1.0, "LH1": 1.0}
+    tracker._lighthouse_cohort_generation = 2
+    tracker.latest_poses = {
+        "T20": PoseData(
+            "T20",
+            1.0,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            raw_optical_timestamp_s=1.0,
+            raw_optical_age_s=0.0,
+            raw_optical_measurement_count=1,
+            raw_optical_event_sequence=7,
+            optical_timestamp_s=1.0,
+            optical_age_s=0.0,
+            optical_measurement_count=1,
+            optical_lighthouse_count=2,
+            optical_event_sequence=7,
+            pose_confidence=None,
+        )
+    }
+    # This hardware-free instance is intentionally not connected.  Suppress
+    # the production destructor, which owns fields irrelevant to this test.
+    tracker.running = False
+    tracker.context = None
+
+    first = tracker.get_tracking_health("T20")
+    second = tracker.get_tracking_health("T20")
+
+    assert first["optical_event_sequence"] == 101
+    assert second["optical_event_sequence"] == 102
+    assert first["tracker_pose_timestamp_s"] == second["tracker_pose_timestamp_s"]
 
 
 def test_close_releases_destroyed_context_for_a_clean_decoder_restart() -> None:
@@ -215,9 +894,112 @@ def test_sense_restarts_only_the_vive_tracker_context(monkeypatch) -> None:
 
     old_tracker = _OldTracker()
     sense._vive_tracker = old_tracker
-    monkeypatch.setattr("pika.tracker.vive_tracker.ViveTracker", _NewTracker)
+    monkeypatch.setattr(
+        "pika.tracker.process_vive_tracker.IsolatedViveTracker",
+        _NewTracker,
+    )
 
     assert sense.restart_vive_tracker() is True
     assert old_tracker.disconnect_calls == 1
     assert isinstance(sense._vive_tracker, _NewTracker)
     assert sense._vive_tracker.connect_calls == 1
+
+
+def test_sense_restart_without_tracker_starts_isolated_worker(monkeypatch) -> None:
+    sense = Sense(port="/dev/null")
+
+    class _NewTracker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def connect(self):
+            return True
+
+    monkeypatch.setattr(
+        "pika.tracker.process_vive_tracker.IsolatedViveTracker",
+        _NewTracker,
+    )
+
+    assert sense._vive_tracker is None
+    assert sense.restart_vive_tracker() is True
+    assert isinstance(sense._vive_tracker, _NewTracker)
+
+
+def test_sense_restarts_isolated_tracker_worker_in_place() -> None:
+    sense = Sense(port="/dev/null")
+
+    class _ManagedTracker:
+        def __init__(self):
+            self.restart_calls = 0
+
+        def restart(self):
+            self.restart_calls += 1
+            return True
+
+    tracker = _ManagedTracker()
+    sense._vive_tracker = tracker
+
+    assert sense.restart_vive_tracker() is True
+    assert sense._vive_tracker is tracker
+    assert tracker.restart_calls == 1
+
+
+def test_sense_keeps_old_tracker_when_context_shutdown_is_not_clean(
+    monkeypatch,
+) -> None:
+    """A failed shutdown must not orphan the only owner of the C context."""
+    sense = Sense(port="/dev/null")
+
+    class _OldTracker:
+        def disconnect(self):
+            return False
+
+    class _NewTracker:
+        def __init__(self, **_kwargs):
+            raise AssertionError("replacement context must not be created")
+
+    old_tracker = _OldTracker()
+    sense._vive_tracker = old_tracker
+    monkeypatch.setattr(
+        "pika.tracker.process_vive_tracker.IsolatedViveTracker",
+        _NewTracker,
+    )
+
+    assert sense.restart_vive_tracker() is False
+    assert sense._vive_tracker is old_tracker
+
+
+def test_disconnect_refuses_to_destroy_context_used_by_a_live_worker() -> None:
+    """Never call survive_simple_close while a Python worker still uses it."""
+
+    class _LiveThread:
+        def join(self, timeout):
+            assert timeout == pytest.approx(2.0)
+
+        def is_alive(self):
+            return True
+
+    class _Monitor:
+        def __init__(self):
+            self.closed = []
+
+        def close(self, context):
+            self.closed.append(context)
+
+    tracker = ViveTracker.__new__(ViveTracker)
+    tracker.running = True
+    tracker.context = object()
+    tracker.collector_thread = _LiveThread()
+    tracker.processor_thread = None
+    tracker.device_monitor_thread = None
+    tracker.pose_queue = None
+    tracker.devices_info = {}
+    tracker.data_lock = threading.Lock()
+    tracker.latest_poses = {}
+    tracker._lighthouse_discovered_at = {}
+    tracker._lighthouse_cohort_generation = 0
+    tracker._optical_health_monitor = _Monitor()
+
+    assert tracker.disconnect() is False
+    assert tracker._optical_health_monitor.closed == []
+    assert tracker.context is not None
